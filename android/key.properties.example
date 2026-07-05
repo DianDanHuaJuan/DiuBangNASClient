@@ -1,0 +1,7 @@
+# Copy to android/key.properties and fill in your own local release keystore settings.
+# key.properties is gitignored — never commit the real file.
+
+storePassword=YOUR_KEYSTORE_PASSWORD
+keyPassword=YOUR_KEY_PASSWORD
+keyAlias=YOUR_KEY_ALIAS
+storeFile=/absolute/path/to/your-release-keystore.jks
