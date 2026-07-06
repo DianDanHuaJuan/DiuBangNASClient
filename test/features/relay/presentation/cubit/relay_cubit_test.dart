@@ -282,6 +282,118 @@ void main() {
 
       expect(cubit.state.unreadForPeer('phone-01'), 0);
     });
+
+    test(
+      'applyTransferEvent updates peer history when chat page is not open',
+      () {
+        final session = _buildSession();
+        final nodeStore = UnifiedNodeStore()..applyCurrentSession(session);
+        final cubit = RelayCubit(
+          relayRepository: _FakeRelayRepository(),
+          deviceFileService: _FakeDeviceFileService(),
+          unifiedNodeStore: nodeStore,
+        );
+        addTearDown(cubit.close);
+
+        expect(cubit.state.activePeerClientId, isNull);
+
+        cubit.applyTransferEvent('transfer.ready', <String, dynamic>{
+          'transfer': _transferJson(
+            transferId: 'relay-off-chat',
+            senderClientId: 'phone-01',
+            receiverClientId: 'tablet-01',
+          ),
+        });
+
+        expect(cubit.state.peerHistory('phone-01').transfers, hasLength(1));
+        expect(
+          cubit.state.peerHistory('phone-01').transfers.single.transferId,
+          'relay-off-chat',
+        );
+      },
+    );
+
+    test(
+      'loadPeerConversation merges global transfers when peer history is cached',
+      () async {
+        final session = _buildSession();
+        final staleTransfer = _transfer(
+          transferId: 'relay-stale',
+          senderClientId: 'phone-01',
+          senderLabel: 'Phone 01',
+          status: RelayTransferStatus.completed,
+          createdAt: DateTime(2026, 4, 12, 8),
+        );
+        final repository = _FakeRelayRepository(
+          peerHistoryResults: <AppResult<RelayPeerHistoryPage>>[
+            Success(
+              RelayPeerHistoryPage(
+                transfers: <RelayTransferEntity>[staleTransfer],
+                hasMore: false,
+              ),
+            ),
+          ],
+        );
+        final nodeStore = UnifiedNodeStore()..applyCurrentSession(session);
+        final cubit = RelayCubit(
+          relayRepository: repository,
+          deviceFileService: _FakeDeviceFileService(),
+          unifiedNodeStore: nodeStore,
+        );
+        addTearDown(cubit.close);
+
+        await cubit.loadPeerConversation('phone-01');
+        expect(
+          cubit.state.peerHistory('phone-01').transfers.single.transferId,
+          'relay-stale',
+        );
+
+        cubit.applyTransferEvent('transfer.ready', <String, dynamic>{
+          'transfer': _transferJson(
+            transferId: 'relay-new-off-chat',
+            senderClientId: 'phone-01',
+            receiverClientId: 'tablet-01',
+          ),
+        });
+        expect(cubit.state.activePeerClientId, isNull);
+
+        await cubit.loadPeerConversation('phone-01');
+
+        expect(
+          cubit.state.peerHistory('phone-01').transfers.map(
+            (transfer) => transfer.transferId,
+          ),
+          containsAll(<String>['relay-stale', 'relay-new-off-chat']),
+        );
+        expect(repository.peerHistoryRequestCount, 1);
+      },
+    );
+
+    test('ingestSnapshotTransfers updates peer conversation histories', () {
+      final session = _buildSession();
+      final nodeStore = UnifiedNodeStore()..applyCurrentSession(session);
+      final cubit = RelayCubit(
+        relayRepository: _FakeRelayRepository(),
+        deviceFileService: _FakeDeviceFileService(),
+        unifiedNodeStore: nodeStore,
+      );
+      addTearDown(cubit.close);
+
+      cubit.ingestSnapshotTransferMaps(<dynamic>[
+        _transferJson(
+          transferId: 'relay-snapshot',
+          senderClientId: 'phone-01',
+          receiverClientId: 'tablet-01',
+        ),
+      ]);
+
+      expect(cubit.state.transfers, hasLength(1));
+      expect(cubit.state.peerHistory('phone-01').transfers, hasLength(1));
+      expect(
+        cubit.state.peerHistory('phone-01').transfers.single.transferId,
+        'relay-snapshot',
+      );
+    });
   });
 }
 
@@ -432,6 +544,8 @@ class _FakeRelayRepository implements RelayRepository {
   final List<({String receiverClientId, String localPath})> sentRequests =
       <({String receiverClientId, String localPath})>[];
   int _peerHistoryRequestCount = 0;
+
+  int get peerHistoryRequestCount => _peerHistoryRequestCount;
 
   _FakeRelayRepository({
     this.historyResult = const Success(<RelayTransferEntity>[]),

@@ -192,6 +192,18 @@ class RelayCubit extends Cubit<RelayState> {
       return;
     }
     if (existing.transfers.isNotEmpty) {
+      final merged = _mergePeerConversationTransfers(
+        existing.transfers,
+        state.transfersForPeer(currentClientId!, peerId),
+      );
+      emit(
+        _buildState(
+          peerConversationHistories: _withPeerHistory(
+            peerId,
+            existing.copyWith(transfers: merged),
+          ),
+        ),
+      );
       unawaited(_pullThumbnailsForPeerConversation(peerId));
       return;
     }
@@ -435,12 +447,36 @@ class RelayCubit extends Cubit<RelayState> {
     }
 
     var nextTransfers = state.transfers;
+    var nextPeerHistories = Map<String, PeerConversationHistory>.from(
+      state.peerConversationHistories,
+    );
+    final selfClientId = currentClientId;
     for (final transfer in transfers) {
       nextTransfers = _upsertTransfer(nextTransfers, transfer);
+      if (selfClientId == null) {
+        continue;
+      }
+      final peerId = transfer.counterpartClientIdFor(selfClientId)?.trim();
+      if (peerId == null || peerId.isEmpty) {
+        continue;
+      }
+      if (!transfer.involvesPeer(selfClientId, peerId)) {
+        continue;
+      }
+      final existing =
+          nextPeerHistories[peerId] ?? const PeerConversationHistory();
+      final merged = _upsertTransfer(existing.transfers, transfer);
+      merged.sort((left, right) => left.createdAt.compareTo(right.createdAt));
+      nextPeerHistories[peerId] = existing.copyWith(transfers: merged);
     }
     _ingestTransferPeers(nextTransfers);
     _recomputeUnreadFromHistory(nextTransfers);
-    emit(_buildState(transfers: nextTransfers));
+    emit(
+      _buildState(
+        transfers: nextTransfers,
+        peerConversationHistories: nextPeerHistories,
+      ),
+    );
     final activePeerId = state.activePeerClientId?.trim();
     if (activePeerId != null && activePeerId.isNotEmpty) {
       unawaited(_pullThumbnailsForPeerConversation(activePeerId));
@@ -1219,21 +1255,16 @@ class RelayCubit extends Cubit<RelayState> {
     RelayTransferEntity transfer,
   ) {
     final selfClientId = currentClientId;
-    final activePeerId = state.activePeerClientId?.trim();
-    if (selfClientId == null ||
-        activePeerId == null ||
-        !transfer.involvesPeer(selfClientId, activePeerId)) {
+    if (selfClientId == null) {
       return null;
     }
 
-    final existing = state.peerHistory(activePeerId);
+    final peerId = transfer.counterpartClientIdFor(selfClientId)?.trim();
+    if (peerId == null || peerId.isEmpty) {
+      return null;
+    }
 
-    final merged = _upsertTransfer(existing.transfers, transfer);
-    merged.sort((left, right) => left.createdAt.compareTo(right.createdAt));
-    return _withPeerHistory(
-      activePeerId,
-      existing.copyWith(transfers: merged),
-    );
+    return _upsertPeerConversationTransfer(peerId, transfer);
   }
 
   Map<String, PeerConversationHistory>? _appendSentTransfersToPeerConversation(
