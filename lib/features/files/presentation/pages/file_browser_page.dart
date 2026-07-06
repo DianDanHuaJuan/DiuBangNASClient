@@ -372,20 +372,46 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('删除文件'),
-        content: Text('确定要删除已选中的 $selectedCount 个文件吗？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFB64848),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('确定要删除已选中的 $selectedCount 个文件吗？'),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFB64848),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text('删除'),
+              ),
             ),
-            child: const Text('删除'),
-          ),
-        ],
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: const Color(0xFF2F2E2B),
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text('取消'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
 
@@ -1097,11 +1123,11 @@ class _SelectionActionBar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 12),
-            FilledButton.icon(
+            TextButton.icon(
               onPressed: onDelete,
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFB64848),
-                foregroundColor: Colors.white,
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.transparent,
+                foregroundColor: const Color(0xFFB64848),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
                   vertical: 8,
@@ -1114,12 +1140,11 @@ class _SelectionActionBar extends StatelessWidget {
               label: const Text('删除'),
             ),
             const SizedBox(width: 8),
-            FilledButton.icon(
+            TextButton.icon(
               onPressed: onCancel,
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFF1F0ED),
-                foregroundColor: const Color(0xFF4D4A45),
-                elevation: 0,
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.transparent,
+                foregroundColor: const Color(0xFF3D8A5A),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
                   vertical: 8,
