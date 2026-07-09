@@ -28,6 +28,8 @@ The client loads a symmetric key from the root-level `Encryption_key` file (bund
 
 During initial server pairing, `pairing_client.dart` temporarily accepts any server certificate while downloading the CA certificate (`badCertificateCallback` returns `true`). This is intentional for bootstrap but means pairing must occur on a trusted network.
 
+Credential-based device enrollment (`POST /api/v1/auth/credential-device-enroll`) uses the same bootstrap certificate download path. Owner credentials are sent only for that request and are **not** persisted on the client.
+
 After pairing, connections use the pinned CA via `TrustedServerHttpClientFactory`.
 
 ### Debug logging

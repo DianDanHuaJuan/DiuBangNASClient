@@ -32,6 +32,9 @@ class ServerConnectForm extends StatefulWidget {
 }
 
 class ServerConnectFormState extends State<ServerConnectForm> {
+  static const _scanFirstHint =
+      '请通过下方按钮，扫描服务端配对二维码以完成设备注册与连接。';
+
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _serverUrlController;
   String? _statusMessage;
@@ -218,6 +221,85 @@ class ServerConnectFormState extends State<ServerConnectForm> {
     await _applyQrToken(token);
   }
 
+  Future<void> _showCredentialLoginDialog() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return _CredentialLoginDialog(
+          onLogin: (username, password) async {
+            Navigator.of(dialogContext).pop();
+            await _handleCredentialLogin(
+              username: username,
+              password: password,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _handleCredentialLogin({
+    required String username,
+    required String password,
+  }) async {
+    final serverUrl = _serverUrlController.text.trim();
+
+    try {
+      _setStatus('正在通过账密注册设备…');
+      final pairingResult =
+          await serviceLocator.pairingClient.completeCredentialEnrollment(
+            serverUrl: serverUrl,
+            username: username,
+            password: password,
+          );
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _serverUrlController.text = pairingResult.baseUrl;
+        _statusMessage = null;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('设备注册成功，正在连接')));
+      await context.read<LoginCubit>().connectAfterPairing(pairingResult);
+    } on AppException catch (error) {
+      _setStatus(null);
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('账密登录失败'),
+            content: SingleChildScrollView(
+              child: Text(
+                '错误码: ${error.code}\n错误信息: ${error.message}',
+                style: const TextStyle(fontFamily: 'monospace'),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('确定'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      _setStatus(null);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('账密登录失败: $e')));
+      }
+    }
+  }
+
   void _setStatus(String? message) {
     if (mounted) {
       setState(() {
@@ -236,7 +318,7 @@ class ServerConnectFormState extends State<ServerConnectForm> {
   Widget _buildServerCard(BuildContext context) {
     final theme = Theme.of(context);
     final description = _serverUrlController.text.trim().isEmpty
-        ? '请通过下方按钮，扫描服务端配对二维码以完成设备注册与连接。'
+        ? _scanFirstHint
         : _serverUrlController.text.trim();
 
     return Container(
@@ -290,10 +372,12 @@ class ServerConnectFormState extends State<ServerConnectForm> {
     required IconData icon,
     required String? Function(String?) validator,
     Iterable<String>? autofillHints,
+    bool obscureText = false,
   }) {
     return TextFormField(
       controller: controller,
       autofillHints: autofillHints,
+      obscureText: obscureText,
       decoration: InputDecoration(
         labelText: labelText,
         hintText: hintText,
@@ -308,6 +392,7 @@ class ServerConnectFormState extends State<ServerConnectForm> {
     return BlocBuilder<LoginCubit, LoginState>(
       builder: (context, state) {
         final isLoading = state is LoginLoading;
+        final primaryColor = Theme.of(context).colorScheme.primary;
 
         return SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
@@ -318,7 +403,7 @@ class ServerConnectFormState extends State<ServerConnectForm> {
               children: [
                 const SizedBox(height: 8),
                 Text(
-                  '请通过下方按钮，扫描服务端配对二维码以完成设备注册与连接。',
+                  _scanFirstHint,
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 12),
@@ -394,11 +479,181 @@ class ServerConnectFormState extends State<ServerConnectForm> {
                       : const Icon(Icons.qr_code_scanner_rounded),
                   label: Text(isLoading ? '正在连接…' : '扫描连接二维码'),
                 ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: isLoading ? null : _showCredentialLoginDialog,
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: primaryColor,
+                    disabledBackgroundColor: Colors.white,
+                    disabledForegroundColor: primaryColor.withValues(alpha: 0.45),
+                    minimumSize: const Size.fromHeight(56),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 16,
+                    ),
+                    side: BorderSide(color: primaryColor),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    textStyle: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                  icon: const Icon(Icons.login_rounded),
+                  label: const Text('管理员账密登录'),
+                ),
               ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+class _CredentialLoginDialog extends StatefulWidget {
+  const _CredentialLoginDialog({
+    required this.onLogin,
+  });
+
+  final Future<void> Function(String username, String password) onLogin;
+
+  @override
+  State<_CredentialLoginDialog> createState() => _CredentialLoginDialogState();
+}
+
+class _CredentialLoginDialogState extends State<_CredentialLoginDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _usernameController;
+  late final TextEditingController _passwordController;
+  bool _isSubmitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _usernameController = TextEditingController();
+    _passwordController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _usernameController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate() || _isSubmitting) {
+      return;
+    }
+
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    try {
+      await widget.onLogin(
+        _usernameController.text.trim(),
+        _passwordController.text,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final primaryColor = Theme.of(context).colorScheme.primary;
+
+    return AlertDialog(
+      title: const Text('管理员账密登录'),
+      content: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextFormField(
+              controller: _usernameController,
+              autofillHints: const [AutofillHints.username],
+              decoration: const InputDecoration(
+                labelText: '管理员用户名',
+                hintText: 'admin',
+                prefixIcon: Icon(Icons.person_outline_rounded),
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return '请输入用户名';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _passwordController,
+              obscureText: true,
+              autofillHints: const [AutofillHints.password],
+              decoration: const InputDecoration(
+                labelText: '管理员密码',
+                hintText: '请输入密码',
+                prefixIcon: Icon(Icons.lock_outline_rounded),
+              ),
+              validator: (value) {
+                if (value == null || value.isEmpty) {
+                  return '请输入密码';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _isSubmitting ? null : _submit,
+              child: _isSubmitting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Text('登录'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
+              style: OutlinedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: primaryColor,
+                disabledBackgroundColor: Colors.white,
+                disabledForegroundColor: primaryColor.withValues(alpha: 0.45),
+                minimumSize: const Size.fromHeight(56),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 16,
+                ),
+                side: BorderSide(color: primaryColor),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                textStyle: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.2,
+                ),
+              ),
+              child: const Text('取消'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -163,6 +163,184 @@ class PairingClient {
     );
   }
 
+  /// 使用服务端 owner 账密注册为设备（账密不持久化）
+  Future<PairingResult> completeCredentialEnrollment({
+    required String serverUrl,
+    required String username,
+    required String password,
+  }) async {
+    final normalizedServerUrl = serverUrl.trim();
+    if (normalizedServerUrl.isEmpty) {
+      throw const AppException(
+        code: 'MISSING_SERVER_URL',
+        message: '请输入服务器地址',
+      );
+    }
+
+    final trimmedUsername = username.trim();
+    final trimmedPassword = password;
+    if (trimmedUsername.isEmpty || trimmedPassword.isEmpty) {
+      throw const AppException(
+        code: 'MISSING_CREDENTIALS',
+        message: '请输入用户名和密码',
+      );
+    }
+
+    final certificate = await _downloadCertificate(normalizedServerUrl);
+    final certificateFingerprint = await _calculateFingerprint(certificate);
+
+    final deviceId = DeviceIdNormalizer.normalizeRequired(
+      await _deviceIdProvider(),
+    );
+    final physicalDeviceId = deviceId;
+    final deviceName = await _deviceNameProvider();
+    final devicePlatform = await _devicePlatformProvider?.call();
+    final deviceBrand = await _deviceBrandProvider?.call();
+    final deviceModel = await _deviceModelProvider?.call();
+
+    final dio = Dio();
+    final useTlsPinning = Uri.parse(normalizedServerUrl).scheme == 'https';
+    dio.httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () {
+        if (!useTlsPinning) {
+          return HttpClient();
+        }
+        final context = SecurityContext(withTrustedRoots: false);
+        context.setTrustedCertificatesBytes(utf8.encode(certificate));
+        return HttpClient(context: context);
+      },
+    );
+
+    try {
+      final response = await dio.post(
+        '$normalizedServerUrl/api/v1/auth/credential-device-enroll',
+        options: Options(
+          headers: {
+            'Authorization': _encodeBasicAuth(trimmedUsername, trimmedPassword),
+          },
+        ),
+        data: {
+          'device_id': deviceId,
+          'physical_device_id': physicalDeviceId,
+          'device_name': deviceName,
+          if ((devicePlatform?.trim().isNotEmpty ?? false))
+            'device_platform': devicePlatform!.trim(),
+          if ((deviceBrand?.trim().isNotEmpty ?? false))
+            'device_brand': deviceBrand!.trim(),
+          if ((deviceModel?.trim().isNotEmpty ?? false))
+            'device_model': deviceModel!.trim(),
+        },
+      );
+
+      final payload = response.data;
+      if (payload is! Map) {
+        throw const AppException(
+          code: 'INVALID_ENROLLMENT_RESPONSE',
+          message: '服务器返回的设备注册数据无效',
+        );
+      }
+
+      final serverId = payload['serverId'] as String? ?? '';
+      final baseUrl = payload['baseUrl'] as String? ?? normalizedServerUrl;
+      final rootCaPem = payload['rootCaPem'] as String? ?? certificate;
+      final caSha256 = payload['caSha256'] as String? ?? '';
+      final enrolledDeviceId = payload['deviceId'] as String? ?? deviceId;
+      final accessToken = payload['accessToken'] as String? ?? '';
+      final refreshToken = payload['refreshToken'] as String? ?? '';
+
+      if (serverId.trim().isEmpty ||
+          enrolledDeviceId.trim().isEmpty ||
+          accessToken.trim().isEmpty ||
+          refreshToken.trim().isEmpty) {
+        throw const AppException(
+          code: 'INVALID_ENROLLMENT_RESPONSE',
+          message: '服务器返回的设备令牌无效',
+        );
+      }
+
+      final normalizedCaSha256 = _normalizeFingerprint(caSha256);
+      final normalizedCertFingerprint = _normalizeFingerprint(
+        certificateFingerprint,
+      );
+      if (normalizedCaSha256.isNotEmpty &&
+          normalizedCertFingerprint != normalizedCaSha256) {
+        throw const AppException(
+          code: 'FINGERPRINT_MISMATCH',
+          message: '服务器证书指纹不匹配，请检查网络环境',
+        );
+      }
+
+      await _trustedServerStore.trustServer(
+        serverId: serverId.trim(),
+        baseUrl: baseUrl.trim(),
+        rootCaPem: rootCaPem,
+        caSha256: caSha256.isNotEmpty ? caSha256 : certificateFingerprint,
+      );
+
+      return PairingResult(
+        serverId: serverId.trim(),
+        baseUrl: baseUrl.trim(),
+        certificate: rootCaPem,
+        deviceId: enrolledDeviceId.trim(),
+        accessToken: accessToken.trim(),
+        refreshToken: refreshToken.trim(),
+        sessionId: payload['sessionId'] as String?,
+        accessExpiresAt: _parseExpiresAt(payload['accessExpiresAt']),
+      );
+    } on DioException catch (e) {
+      throw _mapDioException(
+        e,
+        defaultCode: 'CREDENTIAL_ENROLL_ERROR',
+        defaultMessage: '账密设备注册失败',
+      );
+    } on AppException {
+      rethrow;
+    } catch (e) {
+      throw AppException(
+        code: 'CREDENTIAL_ENROLL_ERROR',
+        message: '账密设备注册失败: $e',
+      );
+    } finally {
+      dio.close();
+    }
+  }
+
+  /// 下载服务器 CA 证书（首次连接，不校验指纹）
+  Future<String> _downloadCertificate(String serverUrl) async {
+    final tempDio = Dio();
+    tempDio.httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () {
+        final client = HttpClient();
+        client.badCertificateCallback = (cert, host, port) => true;
+        return client;
+      },
+    );
+
+    try {
+      final response = await tempDio.get('$serverUrl/api/v1/pairing/ca-cert');
+      final certPem = response.data['cert'] as String? ?? '';
+      if (certPem.isEmpty) {
+        throw const AppException(
+          code: 'EMPTY_CERTIFICATE',
+          message: '服务器返回的证书为空',
+        );
+      }
+      return certPem;
+    } on DioException catch (e) {
+      throw _mapDioException(
+        e,
+        defaultCode: 'CERT_DOWNLOAD_ERROR',
+        defaultMessage: '下载证书失败',
+      );
+    } on AppException {
+      rethrow;
+    } catch (e) {
+      throw AppException(code: 'CERT_DOWNLOAD_ERROR', message: '下载证书失败: $e');
+    } finally {
+      tempDio.close();
+    }
+  }
+
   /// 下载并验证证书
   Future<String> _downloadAndVerifyCertificate({
     required String serverUrl,
@@ -370,6 +548,11 @@ class PairingClient {
         .replaceAll(':', '')
         .replaceAll(' ', '')
         .trim();
+  }
+
+  String _encodeBasicAuth(String username, String password) {
+    final credentials = utf8.encode('$username:$password');
+    return 'Basic ${base64Encode(credentials)}';
   }
 
   Uint8List _pemToDer(String pem) {

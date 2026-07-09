@@ -28,7 +28,35 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('扫描连接二维码'), findsOneWidget);
+    expect(find.text('管理员账密登录'), findsOneWidget);
+    expect(find.text('管理员用户名'), findsNothing);
+    expect(find.text('管理员密码'), findsNothing);
+    expect(find.text('账密登录'), findsNothing);
     expect(find.byType(ServerConnectForm), findsOneWidget);
+  });
+
+  testWidgets('opens credential dialog from secondary button', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LoginPage(
+          bootstrapDeviceSessionUseCase: BootstrapDeviceSessionUseCase(
+            repository: _NoopAuthRepository(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, '服务器地址'),
+      'https://192.168.1.10:8443',
+    );
+    await tester.tap(find.text('管理员账密登录'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('管理员账密登录'), findsNWidgets(2));
+    expect(find.text('登录'), findsOneWidget);
+    expect(find.text('取消'), findsOneWidget);
   });
 
   testWidgets('returns to the server search page from the login page', (
