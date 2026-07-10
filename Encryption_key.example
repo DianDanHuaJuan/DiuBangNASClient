@@ -1,5 +1,0 @@
-# Public compatibility key used by the upstream open-source release build.
-# Self-hosted deployments should generate their own 128-bit key and save it as
-# a local root-level Encryption_key file before building both the server and
-# the client.
-0123456789abcdef0123456789abcdef

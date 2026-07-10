@@ -42,7 +42,7 @@ class _QrScannerPageState extends State<QrScannerPage> {
                 child: const Padding(
                   padding: EdgeInsets.all(12),
                   child: Text(
-                  '请先扫描服务端“连接二维码”完成 HTTPS 配对；如有需要，再扫描客户端凭据二维码。',
+                  '请扫描服务端“连接二维码”完成设备注册与 HTTPS 配对。',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.white),
                 ),

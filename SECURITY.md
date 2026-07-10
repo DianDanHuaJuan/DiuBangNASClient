@@ -16,14 +16,6 @@ Security fixes are applied to the default branch. There is no long-term support 
 
 Review these before deploying in production or on untrusted networks.
 
-### Static `Encryption_key`
-
-The client loads a symmetric key from the root-level `Encryption_key` file (bundled as a Flutter asset at build time). The repository does not commit a real `Encryption_key`; it ships `Encryption_key.example` as a public compatibility example for the upstream release build. See `lib/core/crypto/encryption_key_loader.dart`.
-
-- Treat the example key, and any release built from it, as public compatibility data rather than a secret boundary.
-- Self-hosted deployments should generate their own independent random `Encryption_key` before building, avoid deriving it from `Encryption_key.example`, and keep client/server values in sync.
-- Anyone operating a deployment with a custom key is responsible for distributing and rotating that key safely.
-
 ### TLS certificate pinning window during pairing
 
 During initial server pairing, `pairing_client.dart` temporarily accepts any server certificate while downloading the CA certificate (`badCertificateCallback` returns `true`). This is intentional for bootstrap but means pairing must occur on a trusted network.

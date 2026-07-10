@@ -33,23 +33,7 @@
    flutter pub get
    ```
 
-3. **生成加密密钥：**
-
-   仓库仅提供 `Encryption_key.example` 作为参考示例，不包含可直接用于构建的密钥。构建前必须生成你自己的 `Encryption_key` 文件。
-
-   生成随机密钥（推荐）：
-
-   ```bash
-   openssl rand -hex 16 > Encryption_key
-   ```
-
-   或者直接复制示例密钥（仅限本地测试，不建议用于生产环境）：
-
-   ```bash
-   cp Encryption_key.example Encryption_key
-   ```
-
-4. 构建 Debug APK（推荐）：
+3. 构建 Debug APK（推荐）：
 
    ```bash
    flutter build apk --debug
@@ -67,10 +51,9 @@
 
 ## 构建发布版本
 
-1. 确保根目录下存在 `Encryption_key` 文件。自行部署的用户请生成独立密钥，不要使用 `.example` 文件。
-2. 如需产出可分发的正式安装包，请自行生成或使用你自己的 Android 签名密钥库，并复制 `android/key.properties.example` 为 `android/key.properties` 后填入本机配置。
+1. 如需产出可分发的正式安装包，请自行生成或使用你自己的 Android 签名密钥库，并复制 `android/key.properties.example` 为 `android/key.properties` 后填入本机配置。
 
-3. 构建：
+2. 构建：
 
    ```bash
    flutter build apk --release

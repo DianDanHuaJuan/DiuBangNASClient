@@ -60,6 +60,3 @@ android/build/
 
 # Accidental system protos
 proto/
-
-# Local encryption key for self-hosted builds
-/Encryption_key

@@ -60,60 +60,12 @@ class ServerConnectFormState extends State<ServerConnectForm> {
     }
   }
 
-  Future<void> _applyPairingToken(String token) async {
-    try {
-      _setStatus('正在处理 HTTPS 配对信息…');
-      final payload = await parsePairingQrToken(token);
-      final discoveryServerId = widget.initialDiscoveryServerId?.trim();
-      final discoveryCaSha256 = normalizeSha256Fingerprint(
-        widget.initialDiscoveryCaSha256 ?? '',
-      );
-
-      if (discoveryServerId != null &&
-          discoveryServerId.isNotEmpty &&
-          discoveryServerId != payload.serverId) {
-        _setStatus(null);
-        throw Exception('二维码中的服务器标识与当前发现结果不一致');
-      }
-
-      await serviceLocator.trustedServerStore.trustServer(
-        serverId: payload.serverId,
-        serverName: payload.serverName ?? '',
-        baseUrl: payload.baseUrl,
-        rootCaPem: payload.rootCaPem,
-        caSha256: payload.caSha256,
-        leafSha256: payload.leafSha256,
-      );
-
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _serverUrlController.text = payload.baseUrl;
-        _statusMessage = null;
-      });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('HTTPS 配对成功')));
-    } catch (e) {
-      _setStatus(null);
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('配对失败: $e')));
-      }
-    }
-  }
-
   Future<void> _applyPairingV3Token(String token) async {
     try {
       final qrData = await serviceLocator.pairingClient.parsePairingQrToken(
         token,
       );
       final discoveryServerId = widget.initialDiscoveryServerId?.trim();
-      final discoveryCaSha256 = normalizeSha256Fingerprint(
-        widget.initialDiscoveryCaSha256 ?? '',
-      );
 
       if (discoveryServerId != null &&
           discoveryServerId.isNotEmpty &&
@@ -200,15 +152,11 @@ class ServerConnectFormState extends State<ServerConnectForm> {
       await _applyPairingV3Token(normalizedToken);
       return;
     }
-    if (isPairingQrToken(normalizedToken)) {
-      await _applyPairingToken(normalizedToken);
-      return;
-    }
     _setStatus(null);
     if (mounted) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('暂不支持该二维码类型')));
+      ).showSnackBar(const SnackBar(content: Text('暂不支持该二维码类型，请扫描服务端连接二维码')));
     }
   }
 

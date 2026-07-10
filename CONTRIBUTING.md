@@ -7,10 +7,9 @@ Thank you for your interest in contributing to **DiuBangNASClient**.
 1. Fork the repository and clone your fork.
 2. Install Flutter (Dart ^3.10.7 per `pubspec.yaml`).
 3. Run `flutter pub get`.
-4. Create a local root-level `Encryption_key` before running the app. `Encryption_key.example` documents the format and matches the public compatibility build, but self-hosted deployments should generate their own independent random 32-character hexadecimal key, not derive one from the example, and use the same value on both client and server.
-5. Run the app: `flutter run`
-6. Run tests: `flutter test`
-7. Run the analyzer: `flutter analyze`
+4. Run the app: `flutter run`
+5. Run tests: `flutter test`
+6. Run the analyzer: `flutter analyze`
 
 ## Pull requests
 
@@ -27,7 +26,7 @@ Thank you for your interest in contributing to **DiuBangNASClient**.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) before reporting or fixing security-sensitive areas (pairing TLS, encryption key handling, certificate pinning).
+See [SECURITY.md](SECURITY.md) before reporting or fixing security-sensitive areas (pairing TLS, certificate pinning).
 
 ## Questions
 
