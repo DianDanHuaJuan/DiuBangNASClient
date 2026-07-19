@@ -63,6 +63,10 @@
 
    输出文件：`build/app/outputs/flutter-apk/diubang_nasclient_<版本号>.apk`（`applicationId`: `com.diubang.nasclient`）。
 
+### 构建网络说明
+
+若 Gradle 依赖下载失败或很慢，可在 `android/gradle.properties` 将 `localProxyEnabled` 改为 `true`，并把 `localProxyPort` 设为 Clash 等的 **HTTP/mixed** 端口（勿填 SOCKS）。构建日志出现 `[localProxy] enabled …` 即表示生效。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ## 贡献
 
 详见 [CONTRIBUTING.md](CONTRIBUTING.md)。提交 Pull Request 前请确保 `flutter analyze` 和 `flutter test` 通过。

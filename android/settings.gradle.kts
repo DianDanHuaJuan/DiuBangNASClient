@@ -1,3 +1,22 @@
+// 本机 HTTP 代理一键开关（android/gradle.properties: localProxyEnabled）
+run {
+    val props = java.util.Properties()
+    val propsFile = file("gradle.properties")
+    if (propsFile.exists()) {
+        propsFile.inputStream().use { props.load(it) }
+    }
+    val enabled = props.getProperty("localProxyEnabled", "false").equals("true", ignoreCase = true)
+    if (enabled) {
+        val host = props.getProperty("localProxyHost", "127.0.0.1").trim()
+        val port = props.getProperty("localProxyPort", "7890").trim()
+        System.setProperty("http.proxyHost", host)
+        System.setProperty("http.proxyPort", port)
+        System.setProperty("https.proxyHost", host)
+        System.setProperty("https.proxyPort", port)
+        println("[localProxy] enabled $host:$port")
+    }
+}
+
 pluginManagement {
     val flutterSdkPath =
         run {

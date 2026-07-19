@@ -49,8 +49,11 @@ app.*.map.json
 *.pen
 /design/
 
-# Android build outputs
+# Android / Gradle build outputs
 android/build/
+**/android/build/
+.gradle/
+**/.gradle/
 
 # Local temp workspace
 /tmp/

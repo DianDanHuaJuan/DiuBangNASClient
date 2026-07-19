@@ -11,6 +11,18 @@ Thank you for your interest in contributing to **DiuBangNASClient**.
 5. Run tests: `flutter test`
 6. Run the analyzer: `flutter analyze`
 
+### Local HTTP proxy (one-line switch)
+
+Java/Gradle does not use the OS system proxy by default. To route Gradle downloads through Clash / V2RayN (or similar) on this machine, flip one flag in `android/gradle.properties`:
+
+```properties
+localProxyEnabled=true
+localProxyHost=127.0.0.1
+localProxyPort=7890
+```
+
+Set `localProxyEnabled=false` to turn it off. Set `localProxyPort` to your client's **HTTP or mixed** port (not SOCKS). When enabled, build logs show `[localProxy] enabled …`. A TUN-mode VPN can make this switch unnecessary.
+
 ## Pull requests
 
 - Keep changes focused; one logical change per PR when possible.
