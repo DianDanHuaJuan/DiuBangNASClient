@@ -85,7 +85,8 @@ class RealtimeSessionService {
   int _heartbeatTimeoutSec = 45;
   RealtimeConnectionStatus _status = RealtimeConnectionStatus.idle;
   void Function(Map<String, dynamic> dashboardPayload)? _dashboardListener;
-  void Function(List<RealtimePresenceClientDto> clients)? _presenceListener;
+  void Function(List<RealtimePresenceClientDto> clients, {Set<String>? enrolledDeviceIds})?
+      _presenceListener;
   void Function(String type, Map<String, dynamic> payload)? _transferListener;
   void Function(List<dynamic> pendingTransfers)? _relaySnapshotListener;
 
@@ -124,7 +125,11 @@ class RealtimeSessionService {
   }
 
   void setPresenceListener(
-    void Function(List<RealtimePresenceClientDto> clients)? listener,
+    void Function(
+      List<RealtimePresenceClientDto> clients, {
+      Set<String>? enrolledDeviceIds,
+    })?
+    listener,
   ) {
     _presenceListener = listener;
   }
@@ -533,7 +538,24 @@ class RealtimeSessionService {
     if (payload == null) {
       return;
     }
-    _presenceListener?.call(_readPresenceClients(payload['clients']));
+    _presenceListener?.call(
+      _readPresenceClients(payload['clients']),
+      enrolledDeviceIds: _readStringIdSet(payload['enrolledDeviceIds']),
+    );
+  }
+
+  Set<String>? _readStringIdSet(Object? value) {
+    if (value is! List) {
+      return null;
+    }
+    final ids = <String>{};
+    for (final item in value) {
+      final id = '$item'.trim();
+      if (id.isNotEmpty) {
+        ids.add(id);
+      }
+    }
+    return Set<String>.unmodifiable(ids);
   }
 
   List<RealtimePresenceClientDto> _readPresenceClients(Object? value) {

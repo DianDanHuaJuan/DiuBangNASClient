@@ -624,7 +624,7 @@ void main() {
       );
       addTearDown(service.dispose);
 
-      service.setPresenceListener((clients) {
+      service.setPresenceListener((clients, {enrolledDeviceIds}) {
         presenceClients = clients;
       });
       service.setTransferListener((type, payload) {

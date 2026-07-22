@@ -76,6 +76,7 @@ class _HomeShellPageState extends State<HomeShellPage>
   bool _transferTasksLoaded = false;
   bool _relayHistoryLoaded = false;
   bool _deferredStartupScheduled = false;
+  Set<String>? _lastSyncedEnrolledDeviceIds;
   ServerAvailabilityStatus _currentServerAvailabilityStatus =
       ServerAvailabilityStatus.offline;
 
@@ -231,9 +232,14 @@ class _HomeShellPageState extends State<HomeShellPage>
     _currentServerAvailabilityStatus =
         _serverAvailabilityController!.currentStatus;
 
-    _realtimeStatusSubscription = _realtimeSessionService!.statusStream.listen(
-      _dashboardCubit!.applyRealtimeConnectionStatus,
-    );
+    _realtimeStatusSubscription = _realtimeSessionService!.statusStream.listen((
+      status,
+    ) {
+      _dashboardCubit!.applyRealtimeConnectionStatus(status);
+      if (status == RealtimeConnectionStatus.connected) {
+        unawaited(_syncDeviceRosterFromServer());
+      }
+    });
     _serverAvailabilitySubscription = _serverAvailabilityController!
         .statusStream
         .listen(_handleServerAvailabilityChanged);
@@ -260,9 +266,21 @@ class _HomeShellPageState extends State<HomeShellPage>
     _realtimeSessionService!.setDashboardListener(
       _dashboardCubit!.applyRealtimeDashboardPayload,
     );
-    _realtimeSessionService!.setPresenceListener(
-      _unifiedNodeStore!.applyPresenceSnapshot,
-    );
+    _realtimeSessionService!.setPresenceListener((
+      clients, {
+      enrolledDeviceIds,
+    }) {
+      final previousEnrolled = _unifiedNodeStore!.enrolledDeviceIds;
+      _unifiedNodeStore!.applyPresenceSnapshot(
+        clients,
+        enrolledDeviceIds: enrolledDeviceIds,
+      );
+      if (enrolledDeviceIds != null &&
+          !_sameStringSet(previousEnrolled, enrolledDeviceIds) &&
+          !_sameStringSet(_lastSyncedEnrolledDeviceIds, enrolledDeviceIds)) {
+        unawaited(_syncDeviceRosterFromServer());
+      }
+    });
     _realtimeSessionService!.setTransferListener(_handleTransferEvent);
     _realtimeSessionService!.setRelaySnapshotListener(
       _relayCubit!.ingestSnapshotTransferMaps,
@@ -275,6 +293,28 @@ class _HomeShellPageState extends State<HomeShellPage>
     if (notify && mounted) {
       setState(() {});
     }
+  }
+
+  Future<void> _syncDeviceRosterFromServer() async {
+    try {
+      await serviceLocator.deviceProfileSyncService.syncServerRoster();
+      _lastSyncedEnrolledDeviceIds = _unifiedNodeStore?.enrolledDeviceIds;
+    } catch (_) {
+      // Keep the local copy; next connect/change will retry.
+    }
+  }
+
+  bool _sameStringSet(Set<String>? left, Set<String>? right) {
+    if (identical(left, right)) {
+      return true;
+    }
+    if (left == null || right == null) {
+      return false;
+    }
+    if (left.length != right.length) {
+      return false;
+    }
+    return left.containsAll(right);
   }
 
   void _scheduleDeferredStartup() {

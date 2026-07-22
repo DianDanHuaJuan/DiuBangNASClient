@@ -19,6 +19,7 @@ class UnifiedNodeStore implements SessionStateBinding {
   AuthStateSnapshot _authState = const AuthStateSnapshot();
   NavigationStateSnapshot _navigationState = const NavigationStateSnapshot();
   SessionContextState _sessionContext = const SessionContextState();
+  Set<String>? _enrolledDeviceIds;
   int _revision = 0;
 
   Stream<int> get stream => _controller.stream;
@@ -693,6 +694,168 @@ class UnifiedNodeStore implements SessionStateBinding {
     _emit();
   }
 
+  /// Last enrolled roster from presence/hello. Null means unknown (old server).
+  Set<String>? get enrolledDeviceIds => _enrolledDeviceIds;
+
+  bool isDeviceEnrolled(String clientId) {
+    final enrolled = _enrolledDeviceIds;
+    if (enrolled == null) {
+      return true;
+    }
+    return enrolled.contains(clientId.trim());
+  }
+
+  void reconcileEnrolledPeers(Set<String> enrolledDeviceIds) {
+    _applyEnrolledRoster(enrolledDeviceIds);
+    _emit();
+  }
+
+  /// Replace peer clients with the authoritative server roster.
+  void applyServerRoster(Iterable<PeerProfileSnapshot> roster) {
+    final now = DateTime.now().toUtc();
+    final selfClientId = _authState.clientId?.trim();
+    final rosterIds = <String>{};
+    for (final profile in roster) {
+      final clientId = profile.deviceId.trim();
+      if (clientId.isEmpty) {
+        continue;
+      }
+      if (selfClientId != null && clientId == selfClientId) {
+        continue;
+      }
+      rosterIds.add(clientId);
+      ensurePeerClient(clientId: clientId);
+      final nodeId = _resolveClientNodeId(accountId: null, clientId: clientId);
+      final previous = _byNodeId[nodeId];
+      if (previous == null) {
+        continue;
+      }
+      final sanitizedLabel = DeviceDisplayResolver.sanitizeAlias(profile.label);
+      final sanitizedDeviceName = _trimOrNull(profile.deviceName);
+      final brand = _trimOrNull(profile.brand) ?? previous.identity.brand;
+      final model = _trimOrNull(profile.model) ?? previous.identity.model;
+      final platform =
+          _trimOrNull(profile.platform) ?? previous.identity.platform;
+      final displayName =
+          _trimOrNull(profile.displayName) ??
+          _bestDisplayName(
+            brand: brand,
+            model: model,
+            deviceName: sanitizedDeviceName ?? previous.identity.deviceName,
+            label: sanitizedLabel ?? previous.identity.label,
+            platform: platform,
+            fallback: previous.identity.clientId ?? clientId,
+          );
+      final online = profile.online;
+      _byNodeId[nodeId] = previous.copyWith(
+        identity: previous.identity.copyWith(
+          clientId: clientId,
+          deviceId: clientId,
+          label: sanitizedLabel ?? previous.identity.label,
+          deviceName: sanitizedDeviceName ?? previous.identity.deviceName,
+          brand: brand,
+          model: model,
+          platform: platform,
+          displayName: displayName,
+        ),
+        presence: online == null
+            ? previous.presence
+            : previous.presence.copyWith(
+                status: online ? PresenceStatus.online : PresenceStatus.offline,
+                connectionId: online ? previous.presence.connectionId : null,
+                sessionId: online ? previous.presence.sessionId : null,
+              ),
+        client: (previous.client ?? const ClientFacet()).copyWith(
+          avatarUpdatedAt:
+              profile.avatarUpdatedAt ?? previous.client?.avatarUpdatedAt,
+        ),
+        meta: _nextMeta(previous.meta, now, 'server-roster'),
+      );
+    }
+
+    _applyEnrolledRoster(rosterIds);
+    _emit();
+  }
+
+  void _applyEnrolledRoster(Set<String> enrolledDeviceIds) {
+    final normalized = enrolledDeviceIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    _enrolledDeviceIds = Set<String>.unmodifiable(normalized);
+
+    final selfClientId = _authState.clientId?.trim();
+    final selfNodeId = _sessionContext.selfClientNodeId;
+    for (final entry in _byNodeId.entries.toList(growable: false)) {
+      final node = entry.value;
+      if (node.kind != NodeKind.client) {
+        continue;
+      }
+      if (entry.key == selfNodeId ||
+          node.relations.contains(NodeRelation.self)) {
+        continue;
+      }
+      final peerId =
+          node.identity.clientId?.trim() ?? node.identity.deviceId?.trim();
+      if (peerId == null || peerId.isEmpty) {
+        continue;
+      }
+      if (selfClientId != null && peerId == selfClientId) {
+        continue;
+      }
+      if (normalized.contains(peerId)) {
+        continue;
+      }
+      _byNodeId.remove(entry.key);
+    }
+  }
+
+  void removePeersMissingFromProfileSync({
+    required Set<String> requestedIds,
+    required Set<String> returnedIds,
+  }) {
+    final missing = requestedIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .where((id) => !returnedIds.contains(id))
+        .toSet();
+    if (missing.isEmpty) {
+      return;
+    }
+
+    final selfClientId = _authState.clientId?.trim();
+    final selfNodeId = _sessionContext.selfClientNodeId;
+    var removed = false;
+    for (final entry in _byNodeId.entries.toList(growable: false)) {
+      final node = entry.value;
+      if (node.kind != NodeKind.client) {
+        continue;
+      }
+      if (entry.key == selfNodeId ||
+          node.relations.contains(NodeRelation.self)) {
+        continue;
+      }
+      final peerId =
+          node.identity.clientId?.trim() ?? node.identity.deviceId?.trim();
+      if (peerId == null || peerId.isEmpty || !missing.contains(peerId)) {
+        continue;
+      }
+      if (selfClientId != null && peerId == selfClientId) {
+        continue;
+      }
+      _byNodeId.remove(entry.key);
+      removed = true;
+    }
+
+    final enrolled = _enrolledDeviceIds;
+    if (enrolled != null) {
+      _enrolledDeviceIds = Set<String>.unmodifiable(enrolled.difference(missing));
+    }
+    if (removed) {
+      _emit();
+    }
+  }
+
   void applyPeerProfiles(Iterable<PeerProfileSnapshot> profiles) {
     final now = DateTime.now().toUtc();
     for (final profile in profiles) {
@@ -707,21 +870,26 @@ class UnifiedNodeStore implements SessionStateBinding {
         continue;
       }
       final sanitizedLabel = DeviceDisplayResolver.sanitizeAlias(profile.label);
-      final sanitizedDeviceName = DeviceDisplayResolver.sanitizeAlias(
-        profile.deviceName,
-      );
+      final sanitizedDeviceName = _trimOrNull(profile.deviceName);
+      final brand = _trimOrNull(profile.brand) ?? previous.identity.brand;
+      final model = _trimOrNull(profile.model) ?? previous.identity.model;
+      final platform =
+          _trimOrNull(profile.platform) ?? previous.identity.platform;
       _byNodeId[nodeId] = previous.copyWith(
         identity: previous.identity.copyWith(
           clientId: clientId,
           deviceId: clientId,
           label: sanitizedLabel ?? previous.identity.label,
           deviceName: sanitizedDeviceName ?? previous.identity.deviceName,
+          brand: brand,
+          model: model,
+          platform: platform,
           displayName: _bestDisplayName(
-            brand: previous.identity.brand,
-            model: previous.identity.model,
+            brand: brand,
+            model: model,
             deviceName: sanitizedDeviceName ?? previous.identity.deviceName,
             label: sanitizedLabel ?? previous.identity.label,
-            platform: previous.identity.platform,
+            platform: platform,
             fallback: previous.identity.clientId ?? clientId,
           ),
         ),
@@ -994,10 +1162,14 @@ class UnifiedNodeStore implements SessionStateBinding {
     _emit();
   }
 
-  void applyPresenceSnapshot(List<RealtimePresenceClientDto> clients) {
+  void applyPresenceSnapshot(
+    List<RealtimePresenceClientDto> clients, {
+    Set<String>? enrolledDeviceIds,
+  }) {
     final now = DateTime.now().toUtc();
     final selfClientId = _authState.clientId;
     final incomingClientIds = <String>{};
+    final knownEnrolled = enrolledDeviceIds ?? _enrolledDeviceIds;
     for (final client in clients) {
       incomingClientIds.add(client.clientId);
       final isSelf = selfClientId != null && client.clientId == selfClientId;
@@ -1006,6 +1178,13 @@ class UnifiedNodeStore implements SessionStateBinding {
         clientId: client.clientId,
       );
       final previous = _byNodeId[nodeId];
+      if (previous == null &&
+          !isSelf &&
+          knownEnrolled != null &&
+          !knownEnrolled.contains(client.clientId.trim())) {
+        // Do not invent peers outside the server roster.
+        continue;
+      }
       final relations = <NodeRelation>{
         if (isSelf) NodeRelation.self else NodeRelation.peer,
         ...?previous?.relations.where(
@@ -1071,32 +1250,35 @@ class UnifiedNodeStore implements SessionStateBinding {
                     (previous?.identity ??
                             NodeIdentity(displayName: client.clientId))
                         .copyWith(
-                          displayName: _bestDisplayName(
-                            brand: client.brand ?? previous?.identity.brand,
-                            model: client.model ?? previous?.identity.model,
-                            deviceName:
-                                client.deviceName ??
-                                previous?.identity.deviceName,
-                            label: client.label ?? previous?.identity.label,
-                            platform:
-                                client.platform ?? previous?.identity.platform,
-                            fallback:
-                                previous?.identity.displayName ??
-                                client.clientId,
-                          ),
+                          // Prefer existing roster display fields; presence
+                          // mainly refreshes live connection metadata.
+                          displayName: previous?.identity.displayName ??
+                              _bestDisplayName(
+                                brand: client.brand ?? previous?.identity.brand,
+                                model: client.model ?? previous?.identity.model,
+                                deviceName:
+                                    client.deviceName ??
+                                    previous?.identity.deviceName,
+                                label: client.label ?? previous?.identity.label,
+                                platform:
+                                    client.platform ??
+                                    previous?.identity.platform,
+                                fallback:
+                                    previous?.identity.displayName ??
+                                    client.clientId,
+                              ),
                           accountId:
                               client.accountId ?? previous?.identity.accountId,
                           clientId: client.clientId,
-                          label: client.label ?? previous?.identity.label,
+                          label: previous?.identity.label ?? client.label,
                           deviceName:
-                              client.deviceName ??
-                              previous?.identity.deviceName,
+                              previous?.identity.deviceName ?? client.deviceName,
                           platform:
-                              client.platform ?? previous?.identity.platform,
-                          brand: client.brand ?? previous?.identity.brand,
+                              previous?.identity.platform ?? client.platform,
+                          brand: previous?.identity.brand ?? client.brand,
                           manufacturer:
-                              client.brand ?? previous?.identity.manufacturer,
-                          model: client.model ?? previous?.identity.model,
+                              previous?.identity.manufacturer ?? client.brand,
+                          model: previous?.identity.model ?? client.model,
                           appVersion:
                               client.appVersion ??
                               previous?.identity.appVersion,
@@ -1157,6 +1339,10 @@ class UnifiedNodeStore implements SessionStateBinding {
       );
     }
 
+    if (enrolledDeviceIds != null) {
+      _applyEnrolledRoster(enrolledDeviceIds);
+    }
+
     _emit();
   }
 
@@ -1165,6 +1351,7 @@ class UnifiedNodeStore implements SessionStateBinding {
     _authState = const AuthStateSnapshot();
     _navigationState = const NavigationStateSnapshot();
     _sessionContext = const SessionContextState();
+    _enrolledDeviceIds = null;
     _emit();
   }
 
@@ -1362,6 +1549,14 @@ class UnifiedNodeStore implements SessionStateBinding {
 
   String? _sanitizeDisplayAlias(String? rawValue) {
     return DeviceDisplayResolver.sanitizeAlias(rawValue);
+  }
+
+  String? _trimOrNull(String? rawValue) {
+    final trimmed = rawValue?.trim() ?? '';
+    if (trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed;
   }
 
   bool _shouldPersistPeerIdentity(UnifiedNode node) {

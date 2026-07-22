@@ -67,20 +67,54 @@ class DeviceProfileRemoteDataSource {
         continue;
       }
       final map = item.map((key, value) => MapEntry('$key', value));
-      final deviceId = '${map['deviceId']}'.trim();
-      if (deviceId.isEmpty) {
-        continue;
+      final profile = _parsePeerProfile(map);
+      if (profile != null) {
+        profiles.add(profile);
       }
-      profiles.add(
-        PeerProfileSnapshot(
-          deviceId: deviceId,
-          label: (map['label'] as String?)?.trim(),
-          deviceName: (map['deviceName'] as String?)?.trim(),
-          avatarUpdatedAt: _parseDateTime(map['avatarUpdatedAt']),
-        ),
-      );
     }
     return List<PeerProfileSnapshot>.unmodifiable(profiles);
+  }
+
+  /// Full enrolled client roster from the server (authoritative).
+  Future<List<PeerProfileSnapshot>> fetchRoster() async {
+    final response = await _apiClient.get<Map<String, dynamic>>(
+      '/api/v1/devices/roster',
+    );
+    final rawDevices = response['devices'];
+    if (rawDevices is! List) {
+      return const <PeerProfileSnapshot>[];
+    }
+
+    final profiles = <PeerProfileSnapshot>[];
+    for (final item in rawDevices) {
+      if (item is! Map) {
+        continue;
+      }
+      final map = item.map((key, value) => MapEntry('$key', value));
+      final profile = _parsePeerProfile(map);
+      if (profile != null) {
+        profiles.add(profile);
+      }
+    }
+    return List<PeerProfileSnapshot>.unmodifiable(profiles);
+  }
+
+  PeerProfileSnapshot? _parsePeerProfile(Map<String, dynamic> map) {
+    final deviceId = '${map['deviceId']}'.trim();
+    if (deviceId.isEmpty) {
+      return null;
+    }
+    return PeerProfileSnapshot(
+      deviceId: deviceId,
+      label: (map['label'] as String?)?.trim(),
+      deviceName: (map['deviceName'] as String?)?.trim(),
+      platform: (map['platform'] as String?)?.trim(),
+      brand: (map['brand'] as String?)?.trim(),
+      model: (map['model'] as String?)?.trim(),
+      displayName: (map['displayName'] as String?)?.trim(),
+      avatarUpdatedAt: _parseDateTime(map['avatarUpdatedAt']),
+      online: map['online'] is bool ? map['online'] as bool : null,
+    );
   }
 
   Future<List<int>?> downloadPeerAvatar(String deviceId) async {

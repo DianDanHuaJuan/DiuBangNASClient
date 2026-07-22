@@ -901,11 +901,21 @@ class PeerProfileSnapshot {
     required this.deviceId,
     this.label,
     this.deviceName,
+    this.platform,
+    this.brand,
+    this.model,
+    this.displayName,
     this.avatarUpdatedAt,
+    this.online,
   });
 
   final String deviceId;
   final String? label;
   final String? deviceName;
+  final String? platform;
+  final String? brand;
+  final String? model;
+  final String? displayName;
   final DateTime? avatarUpdatedAt;
+  final bool? online;
 }

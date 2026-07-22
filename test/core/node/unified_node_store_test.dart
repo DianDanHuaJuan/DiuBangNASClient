@@ -29,6 +29,148 @@ void main() {
       expect(store.sessionContext.selfClientNodeId, 'client-account:acct-1');
     });
 
+    test('reconcileEnrolledPeers removes peers deleted from server roster', () {
+      final store = UnifiedNodeStore();
+      store.applyCurrentSession(_buildSession());
+      store.ensurePeerClient(clientId: 'phone-01');
+      store.ensurePeerClient(clientId: 'phone-02');
+
+      store.reconcileEnrolledPeers({'tablet-01', 'phone-02'});
+
+      expect(store.findPeerClientByClientId('phone-01'), isNull);
+      expect(store.findPeerClientByClientId('phone-02'), isNotNull);
+      expect(store.isDeviceEnrolled('phone-01'), isFalse);
+      expect(store.isDeviceEnrolled('phone-02'), isTrue);
+    });
+
+    test(
+      'presence enrolledDeviceIds deletes offline peers no longer enrolled',
+      () {
+        final store = UnifiedNodeStore();
+        store.applyCurrentSession(_buildSession());
+        store.applyPresenceSnapshot(<RealtimePresenceClientDto>[
+          RealtimePresenceClientDto.fromJson({
+            'clientId': 'phone-01',
+            'deviceName': 'OnePlus PLC110',
+            'brand': 'oneplus',
+            'model': 'plc110',
+            'status': 'online',
+          }),
+        ], enrolledDeviceIds: {'tablet-01', 'phone-01'});
+
+        expect(store.findPeerClientByClientId('phone-01'), isNotNull);
+
+        store.applyPresenceSnapshot(
+          const <RealtimePresenceClientDto>[],
+          enrolledDeviceIds: {'tablet-01'},
+        );
+
+        expect(store.findPeerClientByClientId('phone-01'), isNull);
+      },
+    );
+
+    test('applyServerRoster replaces peers with authoritative roster', () {
+      final store = UnifiedNodeStore();
+      store.applyCurrentSession(_buildSession());
+      store.ensurePeerClient(clientId: 'stale-01');
+      store.ensurePeerClient(clientId: 'phone-01');
+
+      store.applyServerRoster([
+        const PeerProfileSnapshot(
+          deviceId: 'phone-01',
+          label: '客厅手机',
+          deviceName: 'Phone Hardware',
+          brand: 'oneplus',
+          model: 'plc110',
+          displayName: '客厅手机',
+          online: false,
+        ),
+        const PeerProfileSnapshot(
+          deviceId: 'tablet-02',
+          label: '书房平板',
+          displayName: '书房平板',
+          online: true,
+        ),
+      ]);
+
+      expect(store.findPeerClientByClientId('stale-01'), isNull);
+      expect(store.findPeerClientByClientId('phone-01')?.publicDisplayName, '客厅手机');
+      expect(
+        store.findPeerClientByClientId('phone-01')?.presence.status,
+        PresenceStatus.offline,
+      );
+      expect(store.findPeerClientByClientId('tablet-02')?.publicDisplayName, '书房平板');
+      expect(
+        store.findPeerClientByClientId('tablet-02')?.presence.status,
+        PresenceStatus.online,
+      );
+      expect(store.isDeviceEnrolled('stale-01'), isFalse);
+      expect(store.isDeviceEnrolled('phone-01'), isTrue);
+    });
+
+    test('presence does not invent peers outside known enrolled roster', () {
+      final store = UnifiedNodeStore();
+      store.applyCurrentSession(_buildSession());
+      store.reconcileEnrolledPeers({'tablet-01', 'phone-01'});
+
+      store.applyPresenceSnapshot(<RealtimePresenceClientDto>[
+        RealtimePresenceClientDto.fromJson({
+          'clientId': 'ghost-01',
+          'deviceName': 'Ghost',
+          'status': 'online',
+        }),
+        RealtimePresenceClientDto.fromJson({
+          'clientId': 'phone-01',
+          'deviceName': 'Phone',
+          'status': 'online',
+        }),
+      ]);
+
+      expect(store.findPeerClientByClientId('ghost-01'), isNull);
+      expect(store.findPeerClientByClientId('phone-01'), isNotNull);
+      expect(
+        store.findPeerClientByClientId('phone-01')?.presence.status,
+        PresenceStatus.online,
+      );
+    });
+
+    test(
+      'removePeersMissingFromProfileSync drops requested ids absent in response',
+      () {
+        final store = UnifiedNodeStore();
+        store.applyCurrentSession(_buildSession());
+        store.ensurePeerClient(clientId: 'gone-01');
+        store.ensurePeerClient(clientId: 'keep-01');
+
+        store.removePeersMissingFromProfileSync(
+          requestedIds: {'gone-01', 'keep-01'},
+          returnedIds: {'keep-01'},
+        );
+
+        expect(store.findPeerClientByClientId('gone-01'), isNull);
+        expect(store.findPeerClientByClientId('keep-01'), isNotNull);
+      },
+    );
+
+    test('applyPeerProfiles applies brand and model for display name', () {
+      final store = UnifiedNodeStore();
+      store.applyCurrentSession(_buildSession());
+      store.ensurePeerClient(clientId: 'phone-01');
+
+      store.applyPeerProfiles(const <PeerProfileSnapshot>[
+        PeerProfileSnapshot(
+          deviceId: 'phone-01',
+          deviceName: 'ignored-when-brand-model',
+          brand: 'oneplus',
+          model: 'plc110',
+        ),
+      ]);
+
+      final phone = store.findPeerClientByClientId('phone-01');
+      expect(phone, isNotNull);
+      expect(phone!.publicDisplayName, 'oneplus plc110');
+    });
+
     test(
       'updates peer nodes from presence snapshot and marks missing peers offline',
       () {

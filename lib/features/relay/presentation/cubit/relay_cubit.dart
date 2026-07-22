@@ -184,6 +184,10 @@ class RelayCubit extends Cubit<RelayState> {
       return;
     }
 
+    if (!_unifiedNodeStore.isDeviceEnrolled(peerId)) {
+      return;
+    }
+
     _unifiedNodeStore.ensurePeerClient(clientId: peerId);
     unawaited(_syncPeerProfiles({peerId}));
 
@@ -590,6 +594,11 @@ class RelayCubit extends Cubit<RelayState> {
     }
     if (currentClientId == null) {
       emit(_buildState(errorMessage: '当前会话缺少绑定的 deviceId，无法发起 Relay'));
+      return;
+    }
+
+    if (!_unifiedNodeStore.isDeviceEnrolled(peerClientId)) {
+      emit(_buildState(errorMessage: '该设备已从服务器移除，无法发起 Relay'));
       return;
     }
 
@@ -1340,6 +1349,9 @@ class RelayCubit extends Cubit<RelayState> {
           ? null
           : transfer.counterpartClientIdFor(selfClientId);
       if (peerClientId == null || peerClientId == selfClientId) {
+        continue;
+      }
+      if (!_unifiedNodeStore.isDeviceEnrolled(peerClientId)) {
         continue;
       }
       peerIds.add(peerClientId);
