@@ -34,15 +34,6 @@ ${base64Encode(List<int>.generate(96, (index) => index % 251))}
 
       server.listen((request) async {
         final path = request.uri.path;
-        if (path == '/api/v1/pairing/ca-cert') {
-          request.response
-            ..statusCode = HttpStatus.ok
-            ..headers.contentType = ContentType.json
-            ..write(jsonEncode({'cert': testCertPem}));
-          await request.response.close();
-          return;
-        }
-
         if (path == '/api/v1/auth/credential-device-enroll') {
           final auth = request.headers.value(HttpHeaders.authorizationHeader);
           expect(auth, startsWith('Basic '));
@@ -96,15 +87,6 @@ ${base64Encode(List<int>.generate(96, (index) => index % 251))}
 
       server.listen((request) async {
         final path = request.uri.path;
-        if (path == '/api/v1/pairing/ca-cert') {
-          request.response
-            ..statusCode = HttpStatus.ok
-            ..headers.contentType = ContentType.json
-            ..write(jsonEncode({'cert': testCertPem}));
-          await request.response.close();
-          return;
-        }
-
         if (path == '/api/v1/auth/credential-device-enroll') {
           request.response
             ..statusCode = HttpStatus.unauthorized

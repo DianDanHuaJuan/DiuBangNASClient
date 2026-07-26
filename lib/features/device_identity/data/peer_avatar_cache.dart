@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/painting.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -36,18 +37,35 @@ class PeerAvatarCache {
     }
     final localPath = await _localPath(normalized);
     final localFile = File(localPath);
+    final exists = await localFile.exists();
     final cachedRevision = _cachedRevisionByDeviceId[normalized];
-    if (await localFile.exists() &&
-        remoteUpdatedAt != null &&
-        cachedRevision != null &&
-        !remoteUpdatedAt.isAfter(cachedRevision)) {
-      return localPath;
+    final remote = remoteUpdatedAt?.toUtc();
+
+    if (exists && remote != null) {
+      // Memory revision from a prior successful sync.
+      if (cachedRevision != null && !remote.isAfter(cachedRevision)) {
+        return localPath;
+      }
+      // App restarted: memory map empty — compare against on-disk mtime.
+      if (cachedRevision == null) {
+        final localMtime = (await localFile.lastModified()).toUtc();
+        if (!remote.isAfter(localMtime)) {
+          _cachedRevisionByDeviceId[normalized] = remote;
+          return localPath;
+        }
+      }
     }
 
-    final bytes = await _remoteDataSource.downloadPeerAvatar(normalized);
+    // remote == null: never treat local bytes as authoritative forever.
+    // Re-download so a later presence push with avatarUpdatedAt can compare.
+    final bytes = await _remoteDataSource.downloadPeerAvatar(
+      normalized,
+      cacheBuster: remote,
+    );
     if (bytes == null || bytes.isEmpty) {
-      _cachedRevisionByDeviceId[normalized] = remoteUpdatedAt;
+      _cachedRevisionByDeviceId[normalized] = remote;
       if (await localFile.exists()) {
+        PaintingBinding.instance.imageCache.evict(FileImage(localFile));
         await localFile.delete();
       }
       return null;
@@ -58,8 +76,11 @@ class PeerAvatarCache {
       await directory.create(recursive: true);
     }
     await localFile.writeAsBytes(bytes, flush: true);
-    _cachedRevisionByDeviceId[normalized] =
-        remoteUpdatedAt ?? DateTime.now().toUtc();
+    // FileImage cache keys by path only; overwrite would otherwise keep old bitmap.
+    PaintingBinding.instance.imageCache.evict(FileImage(localFile));
+    // Do NOT stamp DateTime.now() — that made later real mtimes look "older"
+    // and permanently skipped refreshes.
+    _cachedRevisionByDeviceId[normalized] = remote;
     return localPath;
   }
 

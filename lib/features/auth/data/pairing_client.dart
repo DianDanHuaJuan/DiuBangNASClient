@@ -164,6 +164,9 @@ class PairingClient {
   }
 
   /// 使用服务端 owner 账密注册为设备（账密不持久化）
+  ///
+  /// 首次 HTTPS 握手临时接受自签证书；CA 与指纹以 enroll 响应中的
+  /// `rootCaPem` / `caSha256` 为准并写入信任库，不再依赖独立的 `/pairing/ca-cert`。
   Future<PairingResult> completeCredentialEnrollment({
     required String serverUrl,
     required String username,
@@ -186,9 +189,6 @@ class PairingClient {
       );
     }
 
-    final certificate = await _downloadCertificate(normalizedServerUrl);
-    final certificateFingerprint = await _calculateFingerprint(certificate);
-
     final deviceId = DeviceIdNormalizer.normalizeRequired(
       await _deviceIdProvider(),
     );
@@ -199,15 +199,15 @@ class PairingClient {
     final deviceModel = await _deviceModelProvider?.call();
 
     final dio = Dio();
-    final useTlsPinning = Uri.parse(normalizedServerUrl).scheme == 'https';
+    final useTls = Uri.parse(normalizedServerUrl).scheme == 'https';
     dio.httpClientAdapter = IOHttpClientAdapter(
       createHttpClient: () {
-        if (!useTlsPinning) {
-          return HttpClient();
+        final client = HttpClient();
+        if (useTls) {
+          // Bootstrap only: accept self-signed leaf, then pin CA from response.
+          client.badCertificateCallback = (cert, host, port) => true;
         }
-        final context = SecurityContext(withTrustedRoots: false);
-        context.setTrustedCertificatesBytes(utf8.encode(certificate));
-        return HttpClient(context: context);
+        return client;
       },
     );
 
@@ -242,13 +242,14 @@ class PairingClient {
 
       final serverId = payload['serverId'] as String? ?? '';
       final baseUrl = payload['baseUrl'] as String? ?? normalizedServerUrl;
-      final rootCaPem = payload['rootCaPem'] as String? ?? certificate;
+      final rootCaPem = (payload['rootCaPem'] as String? ?? '').trim();
       final caSha256 = payload['caSha256'] as String? ?? '';
       final enrolledDeviceId = payload['deviceId'] as String? ?? deviceId;
       final accessToken = payload['accessToken'] as String? ?? '';
       final refreshToken = payload['refreshToken'] as String? ?? '';
 
       if (serverId.trim().isEmpty ||
+          rootCaPem.isEmpty ||
           enrolledDeviceId.trim().isEmpty ||
           accessToken.trim().isEmpty ||
           refreshToken.trim().isEmpty) {
@@ -258,6 +259,7 @@ class PairingClient {
         );
       }
 
+      final certificateFingerprint = await _calculateFingerprint(rootCaPem);
       final normalizedCaSha256 = _normalizeFingerprint(caSha256);
       final normalizedCertFingerprint = _normalizeFingerprint(
         certificateFingerprint,
@@ -270,11 +272,15 @@ class PairingClient {
         );
       }
 
+      final resolvedCaSha256 = caSha256.isNotEmpty
+          ? caSha256
+          : certificateFingerprint;
+
       await _trustedServerStore.trustServer(
         serverId: serverId.trim(),
         baseUrl: baseUrl.trim(),
         rootCaPem: rootCaPem,
-        caSha256: caSha256.isNotEmpty ? caSha256 : certificateFingerprint,
+        caSha256: resolvedCaSha256,
       );
 
       return PairingResult(

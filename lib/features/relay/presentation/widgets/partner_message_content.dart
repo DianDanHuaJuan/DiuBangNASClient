@@ -35,11 +35,14 @@ class PartnerMessageContent {
 class PartnerAvatarSpec {
   const PartnerAvatarSpec({
     this.imagePath,
+    this.imageCacheKey,
     this.fallbackIcon,
     this.fallbackInitial,
   });
 
   final String? imagePath;
+  /// Busts Flutter ImageCache / widget identity when the same path is rewritten.
+  final String? imageCacheKey;
   final IconData? fallbackIcon;
   final String? fallbackInitial;
 }

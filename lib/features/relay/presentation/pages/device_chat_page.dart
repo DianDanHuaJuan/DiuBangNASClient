@@ -55,6 +55,7 @@ class _DeviceChatPageState extends State<DeviceChatPage> {
 
   RelayCubit? _relayCubit;
   String? _peerAvatarPath;
+  DateTime? _loadedPeerAvatarUpdatedAt;
 
   @override
 
@@ -79,15 +80,19 @@ class _DeviceChatPageState extends State<DeviceChatPage> {
         peer?.identity.deviceId ??
         peer?.identity.clientId ??
         widget.peerClientId;
+    final remoteUpdatedAt = peer?.client?.avatarUpdatedAt;
     try {
       final path = await serviceLocator.peerAvatarCache.ensureCached(
         deviceId: deviceId,
-        remoteUpdatedAt: peer?.client?.avatarUpdatedAt,
+        remoteUpdatedAt: remoteUpdatedAt,
       );
       if (!mounted) {
         return;
       }
-      setState(() => _peerAvatarPath = path);
+      setState(() {
+        _peerAvatarPath = path;
+        _loadedPeerAvatarUpdatedAt = remoteUpdatedAt;
+      });
     } catch (_) {}
   }
 
@@ -112,6 +117,16 @@ class _DeviceChatPageState extends State<DeviceChatPage> {
     final relayCubit = context.read<RelayCubit>();
 
     return BlocListener<RelayCubit, RelayState>(
+
+      listenWhen: (previous, current) {
+        final peer = _relayCubit?.peerById(widget.peerClientId);
+        final nextUpdatedAt = peer?.client?.avatarUpdatedAt;
+        return nextUpdatedAt != _loadedPeerAvatarUpdatedAt;
+      },
+      listener: (context, state) {
+        unawaited(_loadPeerAvatar());
+      },
+      child: BlocListener<RelayCubit, RelayState>(
 
       listenWhen: (previous, current) =>
 
@@ -189,6 +204,10 @@ class _DeviceChatPageState extends State<DeviceChatPage> {
 
                     peerAvatarPath: _peerAvatarPath,
 
+                    peerAvatarCacheKey: _loadedPeerAvatarUpdatedAt
+                        ?.toUtc()
+                        .toIso8601String(),
+
                     isBusy: state.busyTransferIds.contains(transfer.transferId),
 
                     downloadProgress:
@@ -242,6 +261,8 @@ class _DeviceChatPageState extends State<DeviceChatPage> {
           );
 
         },
+
+      ),
 
       ),
 
@@ -321,6 +342,8 @@ class _DeviceChatPageState extends State<DeviceChatPage> {
 
     String? peerAvatarPath,
 
+    String? peerAvatarCacheKey,
+
     required bool isBusy,
 
     required double? downloadProgress,
@@ -370,6 +393,8 @@ class _DeviceChatPageState extends State<DeviceChatPage> {
             displayName: senderName,
 
             customAvatarPath: peerAvatarPath,
+
+            imageCacheKey: peerAvatarCacheKey,
 
           );
 

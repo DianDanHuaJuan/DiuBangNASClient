@@ -14,12 +14,16 @@ class UserAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final imagePath = spec.imagePath?.trim();
-    if (imagePath != null && imagePath.isNotEmpty && File(imagePath).existsSync()) {
+    if (imagePath != null &&
+        imagePath.isNotEmpty &&
+        File(imagePath).existsSync()) {
       final file = File(imagePath);
+      final cacheKey = spec.imageCacheKey?.trim();
+      final revision = (cacheKey != null && cacheKey.isNotEmpty)
+          ? cacheKey
+          : '${file.lastModifiedSync().millisecondsSinceEpoch}';
       return CircleAvatar(
-        key: ValueKey(
-          '$imagePath-${file.lastModifiedSync().millisecondsSinceEpoch}',
-        ),
+        key: ValueKey('$imagePath-$revision'),
         radius: size / 2,
         backgroundImage: FileImage(file),
       );
@@ -56,10 +60,12 @@ class UserAvatar extends StatelessWidget {
 PartnerAvatarSpec selfAvatarSpec({
   required String? customAvatarPath,
   required String displayName,
+  String? imageCacheKey,
 }) {
   final initial = displayName.trim().isEmpty ? null : displayName.trim();
   return PartnerAvatarSpec(
     imagePath: customAvatarPath,
+    imageCacheKey: imageCacheKey,
     fallbackIcon: Icons.smartphone_rounded,
     fallbackInitial: initial,
   );
@@ -69,9 +75,11 @@ PartnerAvatarSpec peerAvatarSpec({
   required String? platform,
   required String displayName,
   String? customAvatarPath,
+  String? imageCacheKey,
 }) {
   return PartnerAvatarSpec(
     imagePath: customAvatarPath,
+    imageCacheKey: imageCacheKey,
     fallbackIcon: platformIconFor(platform) ?? Icons.devices_rounded,
     fallbackInitial: displayName.trim().isEmpty ? null : displayName.trim(),
   );

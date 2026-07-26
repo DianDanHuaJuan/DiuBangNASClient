@@ -117,10 +117,18 @@ class DeviceProfileRemoteDataSource {
     );
   }
 
-  Future<List<int>?> downloadPeerAvatar(String deviceId) async {
+  Future<List<int>?> downloadPeerAvatar(
+    String deviceId, {
+    DateTime? cacheBuster,
+  }) async {
     try {
       final bytes = await _apiClient.getBytes(
         '/api/v1/devices/$deviceId/avatar',
+        queryParameters: cacheBuster == null
+            ? null
+            : <String, dynamic>{
+                'v': cacheBuster.toUtc().toIso8601String(),
+              },
       );
       if (bytes.isEmpty) {
         return null;
