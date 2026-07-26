@@ -47,6 +47,7 @@ class PreviewRepositoryImpl implements PreviewRepository {
         thumbnailUrl: _normalizeRemoteUrl(dto.thumbnailUrl),
         posterUrl: _normalizeRemoteUrl(dto.posterUrl),
         expiresAt: dto.expiresAt,
+        durationMs: dto.durationMs,
       );
 
       _cache[key] = _CachedPreviewItem(

@@ -290,7 +290,10 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     final initialPosition = widget.initialPosition;
     if (initialPosition != null) {
       await controller.seekTo(
-        _normalizePosition(initialPosition, controller.value.duration),
+        _normalizePosition(
+          initialPosition,
+          _effectiveDuration(controller.value),
+        ),
       );
     }
 
@@ -673,15 +676,40 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    VideoProgressIndicator(
-                      controller,
-                      allowScrubbing: true,
-                      padding: EdgeInsets.zero,
-                      colors: VideoProgressColors(
-                        playedColor: Colors.white,
-                        bufferedColor: Colors.white38,
-                        backgroundColor: Colors.white24,
-                      ),
+                    Builder(
+                      builder: (context) {
+                        final duration = _effectiveDuration(value);
+                        final maxMs = duration.inMilliseconds;
+                        final positionMs = _safePosition(
+                          value,
+                        ).inMilliseconds.clamp(0, maxMs > 0 ? maxMs : 0);
+                        return SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            trackHeight: 2,
+                            thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 6,
+                            ),
+                            overlayShape: const RoundSliderOverlayShape(
+                              overlayRadius: 12,
+                            ),
+                            activeTrackColor: Colors.white,
+                            inactiveTrackColor: Colors.white24,
+                            thumbColor: Colors.white,
+                            overlayColor: Colors.white24,
+                          ),
+                          child: Slider(
+                            value: maxMs <= 0 ? 0 : positionMs.toDouble(),
+                            max: maxMs <= 0 ? 1 : maxMs.toDouble(),
+                            onChanged: maxMs <= 0
+                                ? null
+                                : (next) {
+                                    controller.seekTo(
+                                      Duration(milliseconds: next.round()),
+                                    );
+                                  },
+                          ),
+                        );
+                      },
                     ),
                     const SizedBox(height: 8),
                     Row(
@@ -719,7 +747,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
                             ],
                           ),
                         Text(
-                          _formatDuration(value.duration),
+                          _formatDuration(_effectiveDuration(value)),
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 12,
@@ -818,19 +846,29 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
   }
 
   bool _isCompleted(VideoPlayerValue value) {
-    if (!value.isInitialized || value.duration.inMicroseconds <= 0) {
+    final duration = _effectiveDuration(value);
+    if (!value.isInitialized || duration.inMicroseconds <= 0) {
       return false;
     }
-    return value.position.compareTo(value.duration - _completionTolerance) >= 0;
+    return value.position.compareTo(duration - _completionTolerance) >= 0;
+  }
+
+  Duration _effectiveDuration(VideoPlayerValue value) {
+    final metaMs = widget.source.durationMs;
+    if (metaMs != null && metaMs > 0) {
+      return Duration(milliseconds: metaMs);
+    }
+    return value.duration;
   }
 
   Duration _safePosition(VideoPlayerValue value) {
     if (value.position.inMicroseconds < 0) {
       return Duration.zero;
     }
-    if (value.duration.inMicroseconds > 0 &&
-        value.position.compareTo(value.duration) > 0) {
-      return value.duration;
+    final duration = _effectiveDuration(value);
+    if (duration.inMicroseconds > 0 &&
+        value.position.compareTo(duration) > 0) {
+      return duration;
     }
     return value.position;
   }

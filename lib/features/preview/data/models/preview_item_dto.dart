@@ -15,6 +15,7 @@ class PreviewItemDto {
   final String? thumbnailUrl;
   final String? posterUrl;
   final String? expiresAt;
+  final int? durationMs;
 
   const PreviewItemDto({
     this.kind,
@@ -26,6 +27,7 @@ class PreviewItemDto {
     this.thumbnailUrl,
     this.posterUrl,
     this.expiresAt,
+    this.durationMs,
   });
 
   factory PreviewItemDto.fromJson(Map<String, dynamic> json) {
@@ -45,6 +47,7 @@ class PreviewItemDto {
       thumbnailUrl: json['thumbnailUrl'] as String?,
       posterUrl: json['posterUrl'] as String?,
       expiresAt: json['expiresAt'] as String?,
+      durationMs: json['durationMs'] as int?,
     );
   }
 

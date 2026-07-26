@@ -20,6 +20,7 @@ class PreviewVideoSource {
   final String? posterUrl;
   final String? posterCacheKey;
   final Uint8List? thumbnailData;
+  final int? durationMs;
 
   const PreviewVideoSource({
     required this.nasPath,
@@ -31,6 +32,7 @@ class PreviewVideoSource {
     required this.posterUrl,
     required this.posterCacheKey,
     required this.thumbnailData,
+    this.durationMs,
   });
 
   bool get hasVideoUrl => videoUrl.trim().isNotEmpty;

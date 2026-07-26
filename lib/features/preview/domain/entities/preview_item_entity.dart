@@ -15,6 +15,7 @@ class PreviewItemEntity {
   final String? thumbnailUrl;
   final String? posterUrl;
   final String? expiresAt;
+  final int? durationMs;
 
   const PreviewItemEntity({
     required this.kind,
@@ -26,6 +27,7 @@ class PreviewItemEntity {
     this.thumbnailUrl,
     this.posterUrl,
     this.expiresAt,
+    this.durationMs,
   });
 
   String get formattedSize {

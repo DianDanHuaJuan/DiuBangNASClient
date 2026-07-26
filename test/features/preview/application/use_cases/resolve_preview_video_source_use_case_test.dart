@@ -27,6 +27,7 @@ void main() {
         strategy: PreviewStrategy.progressive,
         url: 'http://nas.local:8080/dav/fs/movies/demo%201.mp4',
         headers: headers,
+        durationMs: 3912400,
       );
 
       final result = useCase(
@@ -48,6 +49,7 @@ void main() {
       expect(result.heroTag, ImageCacheKeyBuilder.heroTag(nasPath));
       expect(result.headers, headers);
       expect(result.strategy, PreviewStrategy.progressive);
+      expect(result.durationMs, 3912400);
       expect(result.thumbnailData, same(thumbnailData));
       expect(result.hasVideoUrl, isTrue);
       expect(result.hasPosterUrl, isTrue);

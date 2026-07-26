@@ -36,6 +36,7 @@ class ResolvePreviewVideoSourceUseCase {
           ? null
           : ImageCacheKeyBuilder.previewKey(nasPath),
       thumbnailData: params.thumbnailData,
+      durationMs: item.durationMs,
     );
   }
 
