@@ -13,8 +13,10 @@ import android.view.Surface;
 import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 import com.google.android.exoplayer2.C;
+import com.google.android.exoplayer2.DefaultLoadControl;
 import com.google.android.exoplayer2.ExoPlayer;
 import com.google.android.exoplayer2.Format;
+import com.google.android.exoplayer2.LoadControl;
 import com.google.android.exoplayer2.MediaItem;
 import com.google.android.exoplayer2.PlaybackException;
 import com.google.android.exoplayer2.PlaybackParameters;
@@ -78,7 +80,15 @@ final class VideoPlayer {
     this.textureEntry = textureEntry;
     this.options = options;
 
-    ExoPlayer exoPlayer = new ExoPlayer.Builder(context).build();
+    LoadControl loadControl =
+        new DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs= */ DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
+                /* maxBufferMs= */ DefaultLoadControl.DEFAULT_MAX_BUFFER_MS,
+                /* bufferForPlaybackMs= */ 750,
+                /* bufferForPlaybackAfterRebufferMs= */ 1500)
+            .build();
+    ExoPlayer exoPlayer = new ExoPlayer.Builder(context).setLoadControl(loadControl).build();
     Uri uri = Uri.parse(dataSource);
 
     DataSource.Factory dataSourceFactory = buildDataSourceFactory(context, uri, httpHeaders);

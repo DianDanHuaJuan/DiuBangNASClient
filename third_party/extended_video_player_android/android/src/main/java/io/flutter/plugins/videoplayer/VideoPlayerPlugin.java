@@ -8,10 +8,8 @@ import android.content.Context;
 import android.net.Uri;
 import android.os.Build;
 import android.util.LongSparseArray;
-import android.webkit.MimeTypeMap;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import com.google.android.exoplayer2.util.MimeTypes;
 import io.flutter.FlutterInjector;
 import io.flutter.Log;
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
@@ -32,6 +30,7 @@ import io.flutter.view.TextureRegistry;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import javax.net.ssl.HttpsURLConnection;
 
@@ -125,6 +124,8 @@ public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
       } else {
         assetLookupKey = flutterState.keyForAsset.get(arg.getAsset());
       }
+      final VideoPlayerOptions playerOptions = new VideoPlayerOptions();
+      playerOptions.mixWithOthers = options.mixWithOthers;
       player =
           new VideoPlayer(
               flutterState.applicationContext,
@@ -133,13 +134,15 @@ public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
               "asset:///" + assetLookupKey,
               null,
               new HashMap<>(),
-              options);
+              playerOptions);
     } else {
       Map<String, String> httpHeaders = arg.getHttpHeaders();
+      final VideoPlayerOptions playerOptions = new VideoPlayerOptions();
+      playerOptions.mixWithOthers = options.mixWithOthers;
       boolean isSupported = isCacheSupported(Uri.parse(arg.getUri()));
       if (isSupported) {
-        options.maxCacheSize = arg.getMaxCacheSize();
-        options.maxFileSize = arg.getMaxFileSize();
+        playerOptions.maxCacheSize = arg.getMaxCacheSize();
+        playerOptions.maxFileSize = arg.getMaxFileSize();
       }
       player =
           new VideoPlayer(
@@ -149,7 +152,7 @@ public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
               arg.getUri(),
               arg.getFormatHint(),
               httpHeaders,
-              options);
+              playerOptions);
     }
     videoPlayers.put(handle.id(), player);
 
@@ -257,8 +260,12 @@ public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
   }
 
   private boolean isCacheSupported(@NonNull Uri uri) {
-    String mimeType = getMimeType(uri.toString());
-    return MimeTypes.VIDEO_MP4.equals(mimeType);
+    final String scheme = uri.getScheme();
+    if (scheme == null) {
+      return false;
+    }
+    final String normalized = scheme.toLowerCase(Locale.US);
+    return "http".equals(normalized) || "https".equals(normalized);
   }
 
   private void onTrustMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
@@ -310,15 +317,5 @@ public class VideoPlayerPlugin implements FlutterPlugin, AndroidVideoPlayerApi {
     }
     final String result = value.toString().trim();
     return result.isEmpty() ? null : result;
-  }
-
-  @Nullable
-  public static String getMimeType(@NonNull String url) {
-    String type = null;
-    String extension = MimeTypeMap.getFileExtensionFromUrl(url);
-    if (extension != null && !extension.isEmpty()) {
-      type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
-    }
-    return type;
   }
 }

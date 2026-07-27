@@ -448,6 +448,9 @@ class _GalleryMediaPageState extends State<_GalleryMediaPage>
               isActive: isActivePage,
               fullscreenMode: fullscreenMode,
               onFullscreenChanged: widget.onFullscreenChanged,
+              onDownloadRequested: () {
+                widget.cubit.handleOriginalAction(widget.index);
+              },
             ),
           ),
           Positioned(

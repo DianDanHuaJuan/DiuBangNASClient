@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:chewie/chewie.dart';
 import 'package:extended_image/extended_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -21,6 +22,8 @@ typedef VideoFullscreenChanged = Future<void> Function(bool isFullscreen);
 typedef VideoPlaybackStateChanged =
     void Function(Duration position, bool isPlaying);
 
+typedef VideoDownloadRequested = void Function();
+
 /// 输入：PreviewVideoSource。
 /// 职责：基于视频地址、封面图和请求头渲染视频预览与播放交互。
 /// 对外接口：VideoPreviewView widget。
@@ -32,6 +35,7 @@ class VideoPreviewView extends StatefulWidget {
   final bool fullscreenMode;
   final VideoFullscreenChanged? onFullscreenChanged;
   final VideoPlaybackStateChanged? onPlaybackStateChanged;
+  final VideoDownloadRequested? onDownloadRequested;
 
   const VideoPreviewView({
     super.key,
@@ -42,6 +46,7 @@ class VideoPreviewView extends StatefulWidget {
     this.fullscreenMode = false,
     this.onFullscreenChanged,
     this.onPlaybackStateChanged,
+    this.onDownloadRequested,
   });
 
   @override
@@ -98,9 +103,6 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
         !didChangeInitialPosition &&
         !didChangeAutoPlay) {
       return;
-    }
-
-    if (didChangeVideoUrl) {
     }
 
     if (!widget.isActive) {
@@ -209,9 +211,14 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
         _controller = null;
         _isInitialized = false;
         _hasError = true;
-        _errorMessage = '视频初始化失败：$error';
+        _errorMessage = _prefersNetworkPlayback
+            ? '无法流式播放该视频'
+            : '视频初始化失败：$error';
         _showControls = true;
       });
+      if (_prefersNetworkPlayback) {
+        unawaited(_showStreamPlaybackFailedDialog());
+      }
     }
   }
 
@@ -225,9 +232,20 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
         loadVersion: loadVersion,
       );
       if (networkController != null) {
-        unawaited(_cacheVideoFileInBackground(videoUrl));
         return networkController;
       }
+      if (!mounted || loadVersion != _loadVersion) {
+        return null;
+      }
+      setState(() {
+        _controller = null;
+        _isInitialized = false;
+        _hasError = true;
+        _errorMessage = '无法流式播放该视频';
+        _showControls = true;
+      });
+      unawaited(_showStreamPlaybackFailedDialog());
+      return null;
     }
 
     _appendDebugLog('开始缓存视频文件：$videoUrl');
@@ -269,7 +287,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
       _appendDebugLog('在线播放初始化完成');
       return controller;
     } catch (error) {
-      _appendDebugLog('在线播放初始化失败，回退到本地缓存：$error');
+      _appendDebugLog('在线播放初始化失败：$error');
       await controller?.dispose();
       return null;
     }
@@ -286,6 +304,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
 
     _controller = controller;
     controller.addListener(_handleControllerChanged);
+    _syncEffectiveDuration(controller);
 
     final initialPosition = widget.initialPosition;
     if (initialPosition != null) {
@@ -323,23 +342,37 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     _appendDebugLog('控制器初始化完成');
   }
 
-  Future<void> _cacheVideoFileInBackground(String videoUrl) async {
-    try {
-      await _cacheCoordinator.cacheFile(
-        url: videoUrl,
-        cacheKey: widget.source.videoCacheKey,
-        headers: widget.source.headers,
-      );
-      _appendDebugLog('后台缓存视频完成');
-    } catch (error, st) {
-      _appendDebugLog('后台缓存视频失败：$error');
-      _appendDebugLog('$st');
-    }
-  }
-
   bool get _prefersNetworkPlayback =>
       widget.source.strategy == PreviewStrategy.progressive ||
       widget.source.strategy == PreviewStrategy.streaming;
+
+  Future<void> _showStreamPlaybackFailedDialog() async {
+    if (!mounted) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('无法流式播放'),
+          content: const Text('当前视频无法流式播放。你可以下载后再查看。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                widget.onDownloadRequested?.call();
+              },
+              child: const Text('下载'),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   Future<void> _disposeController() async {
     final controller = _controller;
@@ -431,9 +464,10 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
       return;
     }
 
-    _notifyPlaybackState(value);
+    _syncEffectiveDuration(controller);
+    _notifyPlaybackState(controller.value);
 
-    if (!value.isPlaying || _isCompleted(value)) {
+    if (!controller.value.isPlaying || _isCompleted(controller.value)) {
       _hideControlsTimer?.cancel();
       if (!_showControls) {
         setState(() {
@@ -441,6 +475,20 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
         });
       }
     }
+  }
+
+  /// Prefer server metadata duration when ExoPlayer reports a shorter value,
+  /// so seekTo / Chewie progress scrub are not clamped to a wrong timeline.
+  void _syncEffectiveDuration(VideoPlayerController controller) {
+    final metaMs = widget.source.durationMs;
+    if (metaMs == null || metaMs <= 0) {
+      return;
+    }
+    final metaDuration = Duration(milliseconds: metaMs);
+    if (controller.value.duration >= metaDuration) {
+      return;
+    }
+    controller.value = controller.value.copyWith(duration: metaDuration);
   }
 
   Future<void> _togglePlayback() async {
@@ -676,40 +724,29 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Builder(
-                      builder: (context) {
-                        final duration = _effectiveDuration(value);
-                        final maxMs = duration.inMilliseconds;
-                        final positionMs = _safePosition(
-                          value,
-                        ).inMilliseconds.clamp(0, maxMs > 0 ? maxMs : 0);
-                        return SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            trackHeight: 2,
-                            thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 6,
-                            ),
-                            overlayShape: const RoundSliderOverlayShape(
-                              overlayRadius: 12,
-                            ),
-                            activeTrackColor: Colors.white,
-                            inactiveTrackColor: Colors.white24,
-                            thumbColor: Colors.white,
-                            overlayColor: Colors.white24,
-                          ),
-                          child: Slider(
-                            value: maxMs <= 0 ? 0 : positionMs.toDouble(),
-                            max: maxMs <= 0 ? 1 : maxMs.toDouble(),
-                            onChanged: maxMs <= 0
-                                ? null
-                                : (next) {
-                                    controller.seekTo(
-                                      Duration(milliseconds: next.round()),
-                                    );
-                                  },
-                          ),
-                        );
-                      },
+                    SizedBox(
+                      height: 28,
+                      child: MaterialVideoProgressBar(
+                        controller,
+                        height: 28,
+                        barHeight: 2,
+                        handleHeight: 6,
+                        colors: ChewieProgressColors(
+                          playedColor: Colors.white,
+                          handleColor: Colors.white,
+                          bufferedColor: Colors.white38,
+                          backgroundColor: Colors.white24,
+                        ),
+                        onDragStart: () {
+                          _hideControlsTimer?.cancel();
+                          if (!_showControls) {
+                            setState(() {
+                              _showControls = true;
+                            });
+                          }
+                        },
+                        onDragEnd: _restartAutoHideTimer,
+                      ),
                     ),
                     const SizedBox(height: 8),
                     Row(

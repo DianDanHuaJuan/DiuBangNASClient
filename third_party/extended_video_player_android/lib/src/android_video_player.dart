@@ -57,8 +57,12 @@ class AndroidVideoPlayer extends VideoPlayerPlatform {
       asset: asset,
       packageName: packageName,
       uri: uri,
-      maxCacheSize: null,
-      maxFileSize: null,
+      maxCacheSize: dataSource.sourceType == DataSourceType.network
+          ? 512 * 1024 * 1024
+          : null,
+      maxFileSize: dataSource.sourceType == DataSourceType.network
+          ? 256 * 1024 * 1024
+          : null,
       httpHeaders: httpHeaders,
       formatHint: formatHint,
     );
