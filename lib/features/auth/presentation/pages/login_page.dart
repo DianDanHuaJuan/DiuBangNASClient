@@ -13,6 +13,7 @@ import '../../application/use_cases/bootstrap_device_session_use_case.dart';
 import '../cubit/login_cubit.dart';
 import '../cubit/login_state.dart';
 import '../widgets/server_connect_form.dart';
+import '../widgets/server_connection_failed_dialog.dart';
 
 class LoginPage extends StatefulWidget {
   final String? initialServerUrl;
@@ -61,9 +62,7 @@ class _LoginPageState extends State<LoginPage> {
           if (state is LoginSuccess) {
             unawaited(_handleLoginSuccess(context, state));
           } else if (state is LoginFailure) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text(state.message)));
+            unawaited(showServerConnectionFailedDialog(context));
           }
         },
         child: Scaffold(

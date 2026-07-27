@@ -15,6 +15,7 @@ import '../../../../core/error/app_exception.dart';
 import '../../../../core/network/nas_network_access_policy.dart';
 import '../../../../core/use_case/no_params.dart';
 import '../widgets/server_entry_card.dart';
+import '../widgets/server_connection_failed_dialog.dart';
 import '../cubit/server_selection_cubit.dart';
 import '../cubit/server_selection_state.dart';
 
@@ -115,11 +116,13 @@ class _ServerSelectionView extends StatelessWidget {
                               Icons.dns_outlined,
                           isOnline: isOnline,
                           isAutoLoggingIn: isAutoLoggingIn,
-                          onTap: () => _tapSavedServer(
-                            context,
-                            server: server,
-                            isOnline: isOnline,
-                          ),
+                          onTap: isOnline == true
+                              ? () => _tapSavedServer(
+                                  context,
+                                  server: server,
+                                  isOnline: isOnline,
+                                )
+                              : null,
                         ),
                       );
                       allServers.add(const SizedBox(height: 12));
@@ -131,32 +134,40 @@ class _ServerSelectionView extends StatelessWidget {
                       }
                       final connectBaseUrl =
                           server.network.connectBaseUrl ?? '';
+                      final isOnline = state.serverOnlineStatus[connectBaseUrl];
                       allServers.add(
                         ServerEntryCard(
                           title: server.identity.displayName,
                           primaryText: 'IP: ${_serverPrimaryText(server)}',
-                          highlighted: true,
+                          highlighted: isOnline == true,
                           leadingIcon:
                               _platformIcon(server.identity.platform) ??
                               Icons.dns_outlined,
                           statusLabel: server.server?.isTrusted == true
                               ? '已信任'
                               : '新发现',
-                          onTap: () => _openLocation(
-                            context,
-                            Uri(
-                              path: RouteNames.login,
-                              queryParameters: {
-                                'serverUrl': connectBaseUrl,
-                                'serverName': server.identity.displayName,
-                                if ((server.identity.serverId ?? '').isNotEmpty)
-                                  'serverId': server.identity.serverId!,
-                                if ((server.server?.certificateSha256 ?? '')
-                                    .isNotEmpty)
-                                  'caSha256': server.server!.certificateSha256!,
-                              },
-                            ).toString(),
-                          ),
+                          isOnline: isOnline,
+                          onTap: isOnline == true
+                              ? () => _openLocation(
+                                  context,
+                                  Uri(
+                                    path: RouteNames.login,
+                                    queryParameters: {
+                                      'serverUrl': connectBaseUrl,
+                                      'serverName':
+                                          server.identity.displayName,
+                                      if ((server.identity.serverId ?? '')
+                                          .isNotEmpty)
+                                        'serverId': server.identity.serverId!,
+                                      if ((server.server?.certificateSha256 ??
+                                              '')
+                                          .isNotEmpty)
+                                        'caSha256':
+                                            server.server!.certificateSha256!,
+                                    },
+                                  ).toString(),
+                                )
+                              : null,
                         ),
                       );
                       allServers.add(const SizedBox(height: 12));
@@ -355,10 +366,8 @@ class _ServerSelectionView extends StatelessWidget {
     required UnifiedNode server,
     required bool? isOnline,
   }) {
-    if (isOnline == false) {
-      final messenger = ScaffoldMessenger.of(context);
-      messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(const SnackBar(content: Text('当前探测未连通，继续尝试连接')));
+    if (isOnline != true) {
+      return;
     }
 
     unawaited(_tryAutoLoginOrNavigate(context, server: server));
@@ -403,6 +412,9 @@ class _ServerSelectionView extends StatelessWidget {
         (serverId.isEmpty || savedSession.serverId.trim() == serverId);
     if (!hasMatchingSession) {
       cubit.setAutoLoggingIn(null);
+      if (!context.mounted) {
+        return;
+      }
       _openLocation(
         context,
         _buildLoginLocation(
@@ -428,43 +440,22 @@ class _ServerSelectionView extends StatelessWidget {
 
       if (result.isSuccess) {
         await serviceLocator.setBaseUrl(normalizedUrl);
+        if (!context.mounted) {
+          return;
+        }
         _openLocation(context, RouteNames.home);
       } else {
-        _openLocation(
-          context,
-          _buildLoginLocation(
-            serverUrl: url,
-            serverName: name,
-            serverId: server.identity.serverId,
-            caSha256: server.server?.certificateSha256,
-          ),
-        );
+        await showServerConnectionFailedDialog(context);
       }
     } on AppException {
       cubit.setAutoLoggingIn(null);
       if (context.mounted) {
-        _openLocation(
-          context,
-          _buildLoginLocation(
-            serverUrl: url,
-            serverName: name,
-            serverId: server.identity.serverId,
-            caSha256: server.server?.certificateSha256,
-          ),
-        );
+        await showServerConnectionFailedDialog(context);
       }
     } catch (_) {
       cubit.setAutoLoggingIn(null);
       if (context.mounted) {
-        _openLocation(
-          context,
-          _buildLoginLocation(
-            serverUrl: url,
-            serverName: name,
-            serverId: server.identity.serverId,
-            caSha256: server.server?.certificateSha256,
-          ),
-        );
+        await showServerConnectionFailedDialog(context);
       }
     }
   }

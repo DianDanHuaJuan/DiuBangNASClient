@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import android.provider.MediaStore
+import android.net.wifi.WifiManager
 import android.util.Log
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -19,6 +20,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.OutputStream
+import java.util.ArrayDeque
 
 class MainActivity : FlutterActivity() {
     private val NSD_CHANNEL = "com.nasclient/nsd"
@@ -31,6 +33,11 @@ class MainActivity : FlutterActivity() {
     private var eventSink: EventChannel.EventSink? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var backupSchedulerChannel: BackupSchedulerChannel
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private val resolveQueue = ArrayDeque<NsdServiceInfo>()
+    private var isResolving = false
+    private val resolveRetryCounts = mutableMapOf<String, Int>()
+    private val maxResolveRetries = 3
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -346,6 +353,7 @@ class MainActivity : FlutterActivity() {
 
     private fun startDiscovery(serviceTypes: List<String>) {
         stopAllDiscoveries()
+        acquireMulticastLock()
 
         for (serviceType in serviceTypes) {
             val listener = createDiscoveryListener(serviceType)
@@ -368,11 +376,18 @@ class MainActivity : FlutterActivity() {
 
             override fun onServiceFound(service: NsdServiceInfo) {
                 Log.d(TAG, "NSD service found: ${service.serviceName}, type: ${service.serviceType}")
-                resolveService(service)
+                enqueueResolve(service)
             }
 
             override fun onServiceLost(service: NsdServiceInfo) {
                 Log.d(TAG, "NSD service lost: ${service.serviceName}")
+                mainHandler.post {
+                    eventSink?.success(mapOf(
+                        "method" to "onServiceLost",
+                        "name" to service.serviceName,
+                        "serviceType" to service.serviceType
+                    ))
+                }
             }
 
             override fun onDiscoveryStopped(serviceType: String) {
@@ -389,14 +404,45 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun enqueueResolve(serviceInfo: NsdServiceInfo) {
+        resolveQueue.addLast(serviceInfo)
+        drainResolveQueue()
+    }
+
+    private fun drainResolveQueue() {
+        if (isResolving) {
+            return
+        }
+        val next = resolveQueue.pollFirst() ?: return
+        isResolving = true
+        resolveService(next)
+    }
+
     private fun resolveService(serviceInfo: NsdServiceInfo) {
+        val resolveKey = "${serviceInfo.serviceName}|${serviceInfo.serviceType}"
         val resolveListener = object : NsdManager.ResolveListener {
             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                 Log.e(TAG, "NSD resolve failed for ${serviceInfo.serviceName}: error $errorCode")
+                val retries = resolveRetryCounts[resolveKey] ?: 0
+                if (retries < maxResolveRetries) {
+                    resolveRetryCounts[resolveKey] = retries + 1
+                    mainHandler.postDelayed({
+                        isResolving = false
+                        resolveQueue.addFirst(serviceInfo)
+                        drainResolveQueue()
+                    }, 200L * (retries + 1))
+                } else {
+                    resolveRetryCounts.remove(resolveKey)
+                    mainHandler.post {
+                        isResolving = false
+                        drainResolveQueue()
+                    }
+                }
             }
 
             override fun onServiceResolved(resolvedInfo: NsdServiceInfo) {
                 Log.d(TAG, "NSD service resolved: ${resolvedInfo.serviceName}, host: ${resolvedInfo.host}, port: ${resolvedInfo.port}")
+                resolveRetryCounts.remove(resolveKey)
                 mainHandler.post {
                     eventSink?.success(mapOf(
                         "method" to "onServiceFound",
@@ -408,6 +454,8 @@ class MainActivity : FlutterActivity() {
                             entry.value?.toString(Charsets.UTF_8) ?: ""
                         }
                     ))
+                    isResolving = false
+                    drainResolveQueue()
                 }
             }
         }
@@ -416,7 +464,39 @@ class MainActivity : FlutterActivity() {
             nsdManager?.resolveService(serviceInfo, resolveListener)
         } catch (e: Exception) {
             Log.e(TAG, "NSD exception in resolveService: ${e.message}")
+            mainHandler.post {
+                isResolving = false
+                drainResolveQueue()
+            }
         }
+    }
+
+    private fun acquireMulticastLock() {
+        if (multicastLock?.isHeld == true) {
+            return
+        }
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val lock = wifiManager.createMulticastLock("nasclient-nsd")
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            multicastLock = lock
+            Log.d(TAG, "MulticastLock acquired")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to acquire MulticastLock: ${e.message}")
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        try {
+            if (multicastLock?.isHeld == true) {
+                multicastLock?.release()
+                Log.d(TAG, "MulticastLock released")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release MulticastLock: ${e.message}")
+        }
+        multicastLock = null
     }
 
     private fun stopAllDiscoveries() {
@@ -429,6 +509,10 @@ class MainActivity : FlutterActivity() {
             }
         }
         discoveryListeners.clear()
+        resolveQueue.clear()
+        resolveRetryCounts.clear()
+        isResolving = false
+        releaseMulticastLock()
     }
 
     override fun onDestroy() {

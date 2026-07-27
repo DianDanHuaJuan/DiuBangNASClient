@@ -48,6 +48,7 @@ void main() {
           keyValueStore: await _buildKeyValueStore(),
           unifiedNodeStore: UnifiedNodeStore(),
           scanDuration: const Duration(milliseconds: 20),
+          onlineProbe: (_) async => false,
         );
         addTearDown(() async {
           await cubit.close();
@@ -117,6 +118,99 @@ void main() {
 
         expect(cubit.state.serverOnlineStatus[savedUrl], isTrue);
         expect(repository.discoverCallCount, 1);
+      },
+    );
+
+    test(
+      'discovery match does not mark saved server online without TCP',
+      () async {
+        const savedUrl = 'https://192.168.1.10:8080';
+        final repository = _FakeServerDiscoveryRepository();
+        final cubit = ServerSelectionCubit(
+          discoveryRepository: repository,
+          keyValueStore: await _buildKeyValueStore(
+            initialValues: <String, Object>{
+              'server_list': jsonEncode([
+                UnifiedNode.savedServer(
+                  serverUrl: savedUrl,
+                  displayName: 'MiniNAS',
+                  updatedAt: DateTime.utc(2026, 5, 17, 10),
+                ).toSavedServerJson(),
+              ]),
+            },
+          ),
+          unifiedNodeStore: UnifiedNodeStore(),
+          scanDuration: const Duration(milliseconds: 50),
+          onlineProbe: (_) async => false,
+        );
+        addTearDown(() async {
+          await cubit.close();
+          await repository.dispose();
+        });
+
+        await cubit.loadSavedServers();
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(cubit.state.serverOnlineStatus[savedUrl], isFalse);
+
+        await cubit.startScan();
+        repository.emit([
+          UnifiedNode.discoveredServer(
+            name: 'MiniNAS',
+            host: '192.168.1.10',
+            port: 8080,
+            serviceType: '_webdavs._tcp.',
+          ),
+        ]);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(cubit.state.serverOnlineStatus[savedUrl], isFalse);
+        expect(cubit.state.isScanning, isTrue);
+      },
+    );
+
+    test(
+      'discovery only marks online after TCP probe succeeds',
+      () async {
+        const discoveredUrl = 'https://192.168.1.20:8080';
+        final repository = _FakeServerDiscoveryRepository();
+        final completer = Completer<bool>();
+        final cubit = ServerSelectionCubit(
+          discoveryRepository: repository,
+          keyValueStore: await _buildKeyValueStore(),
+          unifiedNodeStore: UnifiedNodeStore(),
+          scanDuration: const Duration(milliseconds: 80),
+          onlineProbe: (url) async {
+            if (url != discoveredUrl) {
+              return false;
+            }
+            return completer.future;
+          },
+        );
+        addTearDown(() async {
+          if (!completer.isCompleted) {
+            completer.complete(false);
+          }
+          await cubit.close();
+          await repository.dispose();
+        });
+
+        await cubit.startScan();
+        repository.emit([
+          UnifiedNode.discoveredServer(
+            name: 'NewNAS',
+            host: '192.168.1.20',
+            port: 8080,
+            serviceType: '_webdavs._tcp.',
+            scheme: 'https',
+          ),
+        ]);
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(cubit.state.discoveredServers, hasLength(1));
+        expect(cubit.state.serverOnlineStatus[discoveredUrl], isNull);
+
+        completer.complete(true);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(cubit.state.serverOnlineStatus[discoveredUrl], isTrue);
       },
     );
 

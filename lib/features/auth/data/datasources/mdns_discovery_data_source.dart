@@ -19,7 +19,7 @@ class MdnsDiscoveryDataSource {
     if (_isRunning) return;
     _isRunning = true;
 
-    final servers = <UnifiedNode>[];
+    final serversByServiceName = <String, UnifiedNode>{};
     _controller = StreamController<List<UnifiedNode>>.broadcast();
 
     _eventSubscription = _eventChannel.receiveBroadcastStream().listen(
@@ -46,14 +46,16 @@ class MdnsDiscoveryDataSource {
                 hostLabel: txtRecords['hostLabel'],
                 platform: txtRecords['platform'],
               );
-
-              if (!servers.contains(server)) {
-                servers.add(server);
-                _controller?.add(List.from(servers));
-              }
+              serversByServiceName[name] = server;
+              _controller?.add(List<UnifiedNode>.from(serversByServiceName.values));
+            }
+          } else if (method == 'onServiceLost') {
+            final name = event['name'] as String?;
+            if (name != null && serversByServiceName.remove(name) != null) {
+              _controller?.add(List<UnifiedNode>.from(serversByServiceName.values));
             }
           } else {
-            _controller?.add(List.from(servers));
+            _controller?.add(List<UnifiedNode>.from(serversByServiceName.values));
           }
         }
       },
@@ -69,7 +71,7 @@ class MdnsDiscoveryDataSource {
 
       yield* _controller!.stream;
     } catch (e) {
-      yield servers;
+      yield List<UnifiedNode>.from(serversByServiceName.values);
     } finally {
       _isRunning = false;
     }

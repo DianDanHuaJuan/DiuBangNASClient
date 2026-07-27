@@ -13,7 +13,7 @@ class ServerSelectionState {
   final String? errorMessage;
   final String? scanNoticeMessage;
   final int scanNoticeVersion;
-  final Map<String, bool> serverOnlineStatus;
+  final Map<String, bool?> serverOnlineStatus;
   final bool checkingOnline;
   final String? autoLoggingInUrl;
 
@@ -38,7 +38,7 @@ class ServerSelectionState {
     Object? errorMessage = _serverSelectionStateUnset,
     Object? scanNoticeMessage = _serverSelectionStateUnset,
     int? scanNoticeVersion,
-    Map<String, bool>? serverOnlineStatus,
+    Map<String, bool?>? serverOnlineStatus,
     bool? checkingOnline,
     Object? autoLoggingInUrl = _serverSelectionStateUnset,
   }) {

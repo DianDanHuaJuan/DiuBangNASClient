@@ -304,19 +304,13 @@ class UnifiedNodeStore implements SessionStateBinding {
                   platform:
                       server.identity.platform ?? previous?.identity.platform,
                 ),
-                network: (previous?.network ?? const NodeNetwork()).copyWith(
-                  connectBaseUrl: server.network.connectBaseUrl,
-                  host: server.network.host,
-                  port: server.network.port,
-                  reachable: server.network.reachable,
-                  reachableCheckedAt: server.network.reachableCheckedAt,
+                network: _mergeDiscoveredNetwork(
+                  previous: previous?.network,
+                  incoming: server.network,
                 ),
-                presence: (previous?.presence ?? const NodePresence()).copyWith(
-                  status: server.presence.status,
-                ),
-                runtime: (previous?.runtime ?? const NodeRuntime()).copyWith(
-                  status: server.runtime.status,
-                ),
+                // Discovery must not invent online status; TCP probe owns reachable.
+                presence: previous?.presence ?? const NodePresence(),
+                runtime: previous?.runtime ?? const NodeRuntime(),
                 meta: _nextMeta(
                   previous?.meta,
                   server.meta.updatedAt,
@@ -351,6 +345,24 @@ class UnifiedNodeStore implements SessionStateBinding {
     }
 
     _emit();
+  }
+
+  NodeNetwork _mergeDiscoveredNetwork({
+    required NodeNetwork? previous,
+    required NodeNetwork incoming,
+  }) {
+    final base = previous ?? const NodeNetwork();
+    final endpointChanged =
+        base.connectBaseUrl != incoming.connectBaseUrl ||
+        base.host != incoming.host ||
+        base.port != incoming.port;
+    return base.copyWith(
+      connectBaseUrl: incoming.connectBaseUrl,
+      host: incoming.host,
+      port: incoming.port,
+      reachable: endpointChanged ? null : base.reachable,
+      reachableCheckedAt: endpointChanged ? null : base.reachableCheckedAt,
+    );
   }
 
   void applyTrustedServers(List<TrustedServerRecord> records) {
@@ -425,22 +437,26 @@ class UnifiedNodeStore implements SessionStateBinding {
 
   void setServerReachability({
     required String serverUrl,
-    required bool reachable,
+    required bool? reachable,
   }) {
     final node = findServerByUrl(serverUrl);
     if (node == null) {
       return;
     }
     final now = DateTime.now().toUtc();
+    final presenceStatus = reachable == null
+        ? PresenceStatus.offline
+        : (reachable ? PresenceStatus.online : PresenceStatus.offline);
+    final runtimeStatus = reachable == null
+        ? null
+        : (reachable ? 'online' : 'offline');
     _byNodeId[node.nodeId] = node.copyWith(
       network: node.network.copyWith(
         reachable: reachable,
-        reachableCheckedAt: now,
+        reachableCheckedAt: reachable == null ? null : now,
       ),
-      presence: node.presence.copyWith(
-        status: reachable ? PresenceStatus.online : PresenceStatus.offline,
-      ),
-      runtime: node.runtime.copyWith(status: reachable ? 'online' : 'offline'),
+      presence: node.presence.copyWith(status: presenceStatus),
+      runtime: node.runtime.copyWith(status: runtimeStatus),
       meta: _nextMeta(node.meta, now, 'reachability'),
     );
     _emit();

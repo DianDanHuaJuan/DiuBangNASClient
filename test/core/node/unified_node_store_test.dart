@@ -472,6 +472,33 @@ void main() {
       expect(store.savedServers.first.identity.displayName, 'nas-123456');
     });
 
+    test('applyDiscoveredServers does not invent reachable online', () {
+      final store = UnifiedNodeStore();
+      store.applySavedServers(<UnifiedNode>[
+        UnifiedNode.savedServer(
+          serverUrl: 'https://192.168.1.10:8080',
+          displayName: 'MiniNAS',
+          updatedAt: DateTime.utc(2026, 5, 17, 10),
+        ),
+      ]);
+      store.setServerReachability(
+        serverUrl: 'https://192.168.1.10:8080',
+        reachable: false,
+      );
+
+      store.applyDiscoveredServers(<UnifiedNode>[
+        UnifiedNode.discoveredServer(
+          name: 'MiniNAS',
+          host: '192.168.1.10',
+          port: 8080,
+          serviceType: '_webdavs._tcp.',
+          scheme: 'https',
+        ),
+      ]);
+
+      expect(store.savedServers.first.network.reachable, isFalse);
+    });
+
     test('discovered server uses mDNS serviceName such as DESKTOP hostnames', () {
       final node = UnifiedNode.discoveredServer(
         name: 'DESKTOP-ABC123',

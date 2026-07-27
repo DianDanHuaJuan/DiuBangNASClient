@@ -19,7 +19,7 @@ typedef TrustedServerRecordsLoader =
     Future<List<TrustedServerRecord>> Function();
 
 class ServerSelectionCubit extends Cubit<ServerSelectionState> {
-  static const Duration defaultScanDuration = Duration(seconds: 3);
+  static const Duration defaultScanDuration = Duration(seconds: 6);
   static const Duration _onlineCheckTimeout = Duration(milliseconds: 1500);
 
   ServerSelectionCubit({
@@ -78,15 +78,11 @@ class ServerSelectionCubit extends Cubit<ServerSelectionState> {
         .whereType<String>()
         .where((url) => url.isNotEmpty)
         .toSet();
-    _pendingProbeUrls = urls;
-    emit(
-      state.copyWith(
-        serverOnlineStatus: _buildServerOnlineStatus(
-          _unifiedNodeStore.savedServers,
-        ),
-        checkingOnline: urls.isNotEmpty,
-      ),
-    );
+    _pendingProbeUrls = Set<String>.from(urls);
+    for (final url in urls) {
+      _unifiedNodeStore.setServerReachability(serverUrl: url, reachable: null);
+    }
+    _emitOnlineState(checkingOnline: urls.isNotEmpty);
 
     await Future.wait(
       urls.map((url) async {
@@ -105,14 +101,19 @@ class ServerSelectionCubit extends Cubit<ServerSelectionState> {
       serverUrl: url,
       reachable: isOnline,
     );
+    _emitOnlineState(checkingOnline: _pendingProbeUrls.isNotEmpty);
+  }
+
+  void _emitOnlineState({required bool checkingOnline}) {
     emit(
       state.copyWith(
         savedServers: _unifiedNodeStore.savedServers,
         discoveredServers: _unifiedNodeStore.discoveredServers,
-        serverOnlineStatus: _buildServerOnlineStatus(
-          _unifiedNodeStore.savedServers,
-        ),
-        checkingOnline: _pendingProbeUrls.isNotEmpty,
+        serverOnlineStatus: _buildServerOnlineStatus([
+          ..._unifiedNodeStore.savedServers,
+          ..._unifiedNodeStore.discoveredServers,
+        ]),
+        checkingOnline: checkingOnline,
       ),
     );
   }
@@ -124,18 +125,41 @@ class ServerSelectionCubit extends Cubit<ServerSelectionState> {
     }
 
     final sessionId = ++_scanSessionId;
+    // Establish probe session before any async discovery callbacks.
+    final onlineSessionId = ++_onlineCheckSessionId;
+    final savedUrls = state.savedServers
+        .map((server) => server.network.connectBaseUrl)
+        .whereType<String>()
+        .where((url) => url.isNotEmpty)
+        .toSet();
+    _pendingProbeUrls = Set<String>.from(savedUrls);
+    for (final url in savedUrls) {
+      _unifiedNodeStore.setServerReachability(serverUrl: url, reachable: null);
+    }
+
     emit(
       state.copyWith(
         isScanning: true,
         hasCompletedScan: false,
+        savedServers: _unifiedNodeStore.savedServers,
         discoveredServers: _unifiedNodeStore.discoveredServers,
+        serverOnlineStatus: _buildServerOnlineStatus([
+          ..._unifiedNodeStore.savedServers,
+          ..._unifiedNodeStore.discoveredServers,
+        ]),
+        checkingOnline: savedUrls.isNotEmpty,
         errorMessage: null,
         scanNoticeMessage: null,
       ),
     );
-    if (state.savedServers.isNotEmpty) {
-      unawaited(checkServersOnline(state.savedServers));
+
+    for (final url in savedUrls) {
+      unawaited(() async {
+        final isOnline = await _onlineProbe(url);
+        _setServerStatus(url, isOnline, sessionId: onlineSessionId);
+      }());
     }
+
     _scanTimer = Timer(_scanDuration, () {
       unawaited(_completeScan(sessionId));
     });
@@ -148,16 +172,15 @@ class ServerSelectionCubit extends Cubit<ServerSelectionState> {
             return;
           }
           _unifiedNodeStore.applyDiscoveredServers(servers);
-          _markDiscoveredSavedServersOnline(
-            _unifiedNodeStore.discoveredServers,
-          );
+          _enqueueDiscoveredProbes(servers);
           emit(
             state.copyWith(
               discoveredServers: _unifiedNodeStore.discoveredServers,
               savedServers: _unifiedNodeStore.savedServers,
-              serverOnlineStatus: _buildServerOnlineStatus(
-                _unifiedNodeStore.savedServers,
-              ),
+              serverOnlineStatus: _buildServerOnlineStatus([
+                ..._unifiedNodeStore.savedServers,
+                ..._unifiedNodeStore.discoveredServers,
+              ]),
               isScanning: true,
               errorMessage: null,
               scanNoticeMessage: null,
@@ -201,26 +224,57 @@ class ServerSelectionCubit extends Cubit<ServerSelectionState> {
   bool _isCurrentOnlineCheck(int sessionId) =>
       _onlineCheckSessionId == sessionId;
 
-  void _markDiscoveredSavedServersOnline(List<UnifiedNode> discoveredServers) {
-    final savedUrls = state.savedServers
-        .map((server) => server.network.connectBaseUrl)
-        .whereType<String>()
-        .where((url) => url.isNotEmpty)
-        .toList(growable: false);
-    if (savedUrls.isEmpty) {
+  void _enqueueDiscoveredProbes(List<UnifiedNode> discoveredServers) {
+    final urls = <String>{};
+    for (final discovered in discoveredServers) {
+      final discoveredUrl = discovered.network.connectBaseUrl?.trim() ?? '';
+      if (discoveredUrl.isNotEmpty) {
+        urls.add(discoveredUrl);
+      }
+      for (final saved in state.savedServers) {
+        final savedUrl = saved.network.connectBaseUrl?.trim() ?? '';
+        if (savedUrl.isEmpty) {
+          continue;
+        }
+        if (_matchesSavedServerUrl(savedUrl, discovered)) {
+          urls.add(savedUrl);
+        }
+      }
+    }
+
+    final sessionId = _onlineCheckSessionId;
+    final newUrls = urls
+        .where((url) => url.isNotEmpty && !_pendingProbeUrls.contains(url))
+        .toSet();
+    if (newUrls.isEmpty) {
       return;
     }
 
-    for (final discovered in discoveredServers) {
-      for (final savedUrl in savedUrls) {
-        if (_matchesSavedServerUrl(savedUrl, discovered)) {
-          _unifiedNodeStore.setServerReachability(
-            serverUrl: savedUrl,
-            reachable: true,
-          );
-          _pendingProbeUrls.remove(savedUrl);
-        }
+    _pendingProbeUrls = {..._pendingProbeUrls, ...newUrls};
+    for (final url in newUrls) {
+      // Keep current known status while probe runs; only clear if never probed.
+      final known = state.serverOnlineStatus[url];
+      if (known == null) {
+        _unifiedNodeStore.setServerReachability(serverUrl: url, reachable: null);
       }
+    }
+    emit(
+      state.copyWith(
+        savedServers: _unifiedNodeStore.savedServers,
+        discoveredServers: _unifiedNodeStore.discoveredServers,
+        serverOnlineStatus: _buildServerOnlineStatus([
+          ..._unifiedNodeStore.savedServers,
+          ..._unifiedNodeStore.discoveredServers,
+        ]),
+        checkingOnline: true,
+      ),
+    );
+
+    for (final url in newUrls) {
+      unawaited(() async {
+        final isOnline = await _onlineProbe(url);
+        _setServerStatus(url, isOnline, sessionId: sessionId);
+      }());
     }
   }
 
@@ -320,14 +374,14 @@ class ServerSelectionCubit extends Cubit<ServerSelectionState> {
     _unifiedNodeStore.applyTrustedServers(records);
   }
 
-  Map<String, bool> _buildServerOnlineStatus(List<UnifiedNode> servers) {
-    final result = <String, bool>{};
+  Map<String, bool?> _buildServerOnlineStatus(List<UnifiedNode> servers) {
+    final result = <String, bool?>{};
     for (final server in servers) {
       final url = server.network.connectBaseUrl;
       if (url == null || url.isEmpty) {
         continue;
       }
-      result[url] = server.network.reachable ?? false;
+      result[url] = server.network.reachable;
     }
     return result;
   }

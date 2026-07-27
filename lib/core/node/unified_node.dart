@@ -106,11 +106,9 @@ class UnifiedNode {
         connectBaseUrl: connectBaseUrl,
         host: host,
         port: port,
-        reachable: true,
-        reachableCheckedAt: now,
       ),
-      presence: const NodePresence(status: PresenceStatus.online),
-      runtime: const NodeRuntime(status: 'online'),
+      presence: const NodePresence(),
+      runtime: const NodeRuntime(),
       management: const NodeManagement(),
       meta: NodeMeta(updatedAt: now, updatedFrom: const {'discovery'}),
       server: ServerFacet(
