@@ -5,6 +5,7 @@
 package io.flutter.plugins.videoplayer;
 
 import android.content.Context;
+import android.util.Log;
 import androidx.annotation.NonNull;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.DefaultDataSource;
@@ -48,6 +49,19 @@ public class CacheDataSourceFactory implements DataSource.Factory {
       downloadCache = VideoCache.getInstance(context, maxCacheSize);
     }
 
+    final int flags =
+        CacheDataSource.FLAG_BLOCK_ON_CACHE | CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR;
+    Log.i(
+        "VideoDiag",
+        "CacheDataSource create"
+            + " maxCacheSize="
+            + maxCacheSize
+            + " maxFileSize="
+            + maxFileSize
+            + " flags=BLOCK_ON_CACHE|IGNORE_CACHE_ON_ERROR ("
+            + flags
+            + ")");
+
     /**
      * Setting the flags CacheDataSource.FLAG_BLOCK_ON_CACHE and
      * CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR in the CacheDataSource class affects the caching
@@ -71,7 +85,7 @@ public class CacheDataSourceFactory implements DataSource.Factory {
         defaultDatasourceFactory.createDataSource(),
         new FileDataSource(),
         new CacheDataSink(downloadCache, maxFileSize),
-        CacheDataSource.FLAG_BLOCK_ON_CACHE | CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR,
+        flags,
         null);
   }
 }

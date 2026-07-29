@@ -9,8 +9,10 @@ import static com.google.android.exoplayer2.Player.REPEAT_MODE_OFF;
 
 import android.content.Context;
 import android.net.Uri;
+import android.util.Log;
 import android.view.Surface;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.DefaultLoadControl;
@@ -29,11 +31,13 @@ import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.dash.DashMediaSource;
 import com.google.android.exoplayer2.source.dash.DefaultDashChunkSource;
 import com.google.android.exoplayer2.source.hls.HlsMediaSource;
+import com.google.android.exoplayer2.source.hls.playlist.DefaultHlsPlaylistTracker;
 import com.google.android.exoplayer2.source.smoothstreaming.DefaultSsChunkSource;
 import com.google.android.exoplayer2.source.smoothstreaming.SsMediaSource;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.DefaultDataSource;
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource;
+import com.google.android.exoplayer2.upstream.HttpDataSource;
 import com.google.android.exoplayer2.util.Util;
 import io.flutter.plugin.common.EventChannel;
 import io.flutter.view.TextureRegistry;
@@ -49,6 +53,7 @@ final class VideoPlayer {
   private static final String FORMAT_DASH = "dash";
   private static final String FORMAT_HLS = "hls";
   private static final String FORMAT_OTHER = "other";
+  private static final String DIAG_TAG = "VideoDiag";
 
   private ExoPlayer exoPlayer;
 
@@ -85,18 +90,47 @@ final class VideoPlayer {
             .setBufferDurationsMs(
                 /* minBufferMs= */ DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
                 /* maxBufferMs= */ DefaultLoadControl.DEFAULT_MAX_BUFFER_MS,
-                /* bufferForPlaybackMs= */ 750,
-                /* bufferForPlaybackAfterRebufferMs= */ 1500)
+                /* bufferForPlaybackMs= */ 500,
+                /* bufferForPlaybackAfterRebufferMs= */ 500)
             .build();
     ExoPlayer exoPlayer = new ExoPlayer.Builder(context).setLoadControl(loadControl).build();
     Uri uri = Uri.parse(dataSource);
 
+    final boolean trusted = TrustedServerRegistry.findClient(uri) != null;
+    final boolean cacheRequested =
+        options.maxCacheSize != null
+            && options.maxCacheSize > 0
+            && options.maxFileSize != null
+            && options.maxFileSize > 0;
+    final boolean isHls = isHlsContent(uri, formatHint);
+    // Caching HLS playlists causes Exo to see stale m3u8 and throw PlaylistStuckException.
+    final boolean cacheApplied = cacheRequested && !isHls;
+    diag(
+        "create host="
+            + uri.getHost()
+            + " scheme="
+            + uri.getScheme()
+            + " trustedOkHttp="
+            + trusted
+            + " isHls="
+            + isHls
+            + " formatHint="
+            + formatHint
+            + " cacheRequested="
+            + cacheRequested
+            + " cacheApplied="
+            + cacheApplied
+            + " maxCacheSize="
+            + options.maxCacheSize
+            + " maxFileSize="
+            + options.maxFileSize
+            + " loadControl(bufferForPlaybackMs=500, afterRebufferMs=500)"
+            + " headers="
+            + httpHeaders.keySet());
+
     DataSource.Factory dataSourceFactory = buildDataSourceFactory(context, uri, httpHeaders);
 
-    if (options.maxCacheSize != null
-        && options.maxCacheSize > 0
-        && options.maxFileSize != null
-        && options.maxFileSize > 0) {
+    if (cacheApplied) {
       dataSourceFactory =
           new CacheDataSourceFactory(
               context, options.maxCacheSize, options.maxFileSize, dataSourceFactory);
@@ -108,6 +142,28 @@ final class VideoPlayer {
     exoPlayer.prepare();
 
     setUpVideoPlayer(exoPlayer, new QueuingEventSink());
+    // Queued until Flutter listens; appears in `flutter run` via videoDiag → print.
+    emitDiagEvent(
+        "create host="
+            + uri.getHost()
+            + " scheme="
+            + uri.getScheme()
+            + " trustedOkHttp="
+            + trusted
+            + " isHls="
+            + isHls
+            + " formatHint="
+            + formatHint
+            + " cacheRequested="
+            + cacheRequested
+            + " cacheApplied="
+            + cacheApplied
+            + " maxCacheSize="
+            + options.maxCacheSize
+            + " maxFileSize="
+            + options.maxFileSize
+            + " headers="
+            + httpHeaders.keySet());
   }
 
   // Constructor used to directly test members of this class.
@@ -207,7 +263,18 @@ final class VideoPlayer {
                 new DefaultDashChunkSource.Factory(mediaDataSourceFactory), mediaDataSourceFactory)
             .createMediaSource(MediaItem.fromUri(uri));
       case C.CONTENT_TYPE_HLS:
+        // Default stuck threshold is 3.5 * targetDuration; raise for slow Windows
+        // EVENT HLS transcode that appends segments gradually.
+        // ExoPlayer 2.18 exposes the coefficient via DefaultHlsPlaylistTracker, not
+        // HlsMediaSource.Factory#setPlaylistStuckTargetDurationCoefficient.
         return new HlsMediaSource.Factory(mediaDataSourceFactory)
+            .setPlaylistTrackerFactory(
+                (dataSourceFactory, loadErrorHandlingPolicy, playlistParserFactory) ->
+                    new DefaultHlsPlaylistTracker(
+                        dataSourceFactory,
+                        loadErrorHandlingPolicy,
+                        playlistParserFactory,
+                        /* playlistStuckTargetDurationCoefficient= */ 10.0))
             .createMediaSource(MediaItem.fromUri(uri));
       case C.CONTENT_TYPE_OTHER:
         return new ProgressiveMediaSource.Factory(mediaDataSourceFactory)
@@ -217,6 +284,13 @@ final class VideoPlayer {
           throw new IllegalStateException("Unsupported type: " + type);
         }
     }
+  }
+
+  private static boolean isHlsContent(@NonNull Uri uri, @Nullable String formatHint) {
+    if (FORMAT_HLS.equals(formatHint)) {
+      return true;
+    }
+    return Util.inferContentType(uri) == C.CONTENT_TYPE_HLS;
   }
 
   private void setUpVideoPlayer(ExoPlayer exoPlayer, QueuingEventSink eventSink) {
@@ -255,6 +329,28 @@ final class VideoPlayer {
 
           @Override
           public void onPlaybackStateChanged(final int playbackState) {
+            diag(
+                "state="
+                    + playbackStateName(playbackState)
+                    + " pos="
+                    + exoPlayer.getCurrentPosition()
+                    + " buffered="
+                    + exoPlayer.getBufferedPosition()
+                    + " duration="
+                    + exoPlayer.getDuration()
+                    + " playWhenReady="
+                    + exoPlayer.getPlayWhenReady());
+            emitDiagEvent(
+                "state="
+                    + playbackStateName(playbackState)
+                    + " posMs="
+                    + exoPlayer.getCurrentPosition()
+                    + " bufferedMs="
+                    + exoPlayer.getBufferedPosition()
+                    + " durationMs="
+                    + exoPlayer.getDuration()
+                    + " playWhenReady="
+                    + exoPlayer.getPlayWhenReady());
             if (playbackState == Player.STATE_BUFFERING) {
               setBuffering(true);
               sendBufferingUpdate();
@@ -277,17 +373,34 @@ final class VideoPlayer {
           @Override
           public void onPlayerError(@NonNull final PlaybackException error) {
             setBuffering(false);
+            final String detail = formatPlaybackError(error);
+            diag("onPlayerError " + detail);
+            emitDiagEvent("onPlayerError " + detail);
             if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
               // See https://exoplayer.dev/live-streaming.html#behindlivewindowexception-and-error_code_behind_live_window
               exoPlayer.seekToDefaultPosition();
               exoPlayer.prepare();
             } else if (eventSink != null) {
-              eventSink.error("VideoError", "Video player had error " + error, null);
+              eventSink.error("VideoError", "Video player had error " + detail, detail);
             }
           }
 
           @Override
           public void onIsPlayingChanged(boolean isPlaying) {
+            diag(
+                "isPlaying="
+                    + isPlaying
+                    + " pos="
+                    + exoPlayer.getCurrentPosition()
+                    + " buffered="
+                    + exoPlayer.getBufferedPosition());
+            emitDiagEvent(
+                "isPlaying="
+                    + isPlaying
+                    + " posMs="
+                    + exoPlayer.getCurrentPosition()
+                    + " bufferedMs="
+                    + exoPlayer.getBufferedPosition());
             if (eventSink != null) {
               Map<String, Object> event = new HashMap<>();
               event.put("event", "isPlayingStateUpdate");
@@ -296,6 +409,65 @@ final class VideoPlayer {
             }
           }
         });
+  }
+
+  private void emitDiagEvent(@NonNull String message) {
+    if (eventSink == null) {
+      return;
+    }
+    Map<String, Object> event = new HashMap<>();
+    event.put("event", "videoDiag");
+    event.put("message", message);
+    eventSink.success(event);
+  }
+
+  private static void diag(@NonNull String message) {
+    Log.i(DIAG_TAG, message);
+  }
+
+  @NonNull
+  private static String playbackStateName(int playbackState) {
+    switch (playbackState) {
+      case Player.STATE_IDLE:
+        return "IDLE";
+      case Player.STATE_BUFFERING:
+        return "BUFFERING";
+      case Player.STATE_READY:
+        return "READY";
+      case Player.STATE_ENDED:
+        return "ENDED";
+      default:
+        return "UNKNOWN(" + playbackState + ")";
+    }
+  }
+
+  @NonNull
+  private static String formatPlaybackError(@NonNull PlaybackException error) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("code=")
+        .append(error.errorCode)
+        .append(" name=")
+        .append(error.getErrorCodeName())
+        .append(" msg=")
+        .append(error.getMessage());
+    Throwable cause = error.getCause();
+    int depth = 0;
+    while (cause != null && depth < 8) {
+      sb.append(" | cause[")
+          .append(depth)
+          .append("]=")
+          .append(cause.getClass().getName())
+          .append(": ")
+          .append(cause.getMessage());
+      if (cause instanceof HttpDataSource.InvalidResponseCodeException) {
+        HttpDataSource.InvalidResponseCodeException httpError =
+            (HttpDataSource.InvalidResponseCodeException) cause;
+        sb.append(" httpResponseCode=").append(httpError.responseCode);
+      }
+      cause = cause.getCause();
+      depth++;
+    }
+    return sb.toString();
   }
 
   void sendBufferingUpdate() {
@@ -339,6 +511,25 @@ final class VideoPlayer {
   }
 
   void seekTo(int location) {
+    final long duration = exoPlayer.getDuration();
+    diag(
+        "seekTo requestMs="
+            + location
+            + " durationMs="
+            + duration
+            + " posMs="
+            + exoPlayer.getCurrentPosition()
+            + " bufferedMs="
+            + exoPlayer.getBufferedPosition()
+            + " beyondDuration="
+            + (duration != C.TIME_UNSET && location > duration));
+    emitDiagEvent(
+        "seekTo requestMs="
+            + location
+            + " durationMs="
+            + duration
+            + " beyondDuration="
+            + (duration != C.TIME_UNSET && location > duration));
     exoPlayer.seekTo(location);
   }
 

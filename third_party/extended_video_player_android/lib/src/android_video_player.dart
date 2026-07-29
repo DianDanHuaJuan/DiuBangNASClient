@@ -178,6 +178,11 @@ class AndroidVideoPlayer extends VideoPlayerPlatform {
             eventType: VideoEventType.isPlayingStateUpdate,
             isPlaying: map['isPlaying'] as bool,
           );
+        case 'videoDiag':
+          // Forward native Exo diagnostics into flutter run console.
+          // ignore: avoid_print
+          print('[VideoDiag][native] ${map['message']}');
+          return VideoEvent(eventType: VideoEventType.unknown);
         default:
           return VideoEvent(eventType: VideoEventType.unknown);
       }
