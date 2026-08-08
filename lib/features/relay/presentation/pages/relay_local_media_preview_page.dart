@@ -3,7 +3,8 @@ import 'dart:io';
 import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:video_player/video_player.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../../core/device/media_storage_service.dart';
 import '../../domain/relay_media_kind.dart';
@@ -210,38 +211,61 @@ class RelayLocalVideoPreviewPage extends StatefulWidget {
 }
 
 class _RelayLocalVideoPreviewPageState extends State<RelayLocalVideoPreviewPage> {
-  VideoPlayerController? _controller;
+  Player? _player;
+  VideoController? _videoController;
+  bool _isReady = false;
   bool _hasError = false;
 
   @override
   void initState() {
     super.initState();
-    if (widget.isContentUri) {
-      _controller = VideoPlayerController.contentUri(
-        Uri.parse(widget.localPath),
-      );
-    } else {
-      _controller = VideoPlayerController.file(File(widget.localPath));
-    }
-    _controller!
-      .initialize().then((_) {
-        if (!mounted) {
-          return;
-        }
-        setState(() {});
-        _controller?.play();
-      }).catchError((_) {
-        if (!mounted) {
-          return;
-        }
-        setState(() => _hasError = true);
+    _initPlayer();
+  }
+
+  Future<void> _initPlayer() async {
+    try {
+      final player = Player();
+      final controller = VideoController(player);
+      _player = player;
+      _videoController = controller;
+
+      player.stream.error.listen((error) {
+        if (mounted) setState(() => _hasError = true);
       });
+      player.stream.duration.listen((_) {
+        if (mounted) setState(() => _isReady = true);
+      });
+      player.stream.videoParams.listen((params) {
+        if (mounted && params.w != null && params.h != null) {
+          setState(() => _isReady = true);
+        }
+      });
+
+      final uri = widget.isContentUri
+          ? widget.localPath
+          : 'file://${widget.localPath}';
+      await player.open(Media(uri), play: true);
+      if (mounted) setState(() => _isReady = true);
+    } catch (_) {
+      if (mounted) setState(() => _hasError = true);
+    }
   }
 
   @override
   void dispose() {
-    _controller?.dispose();
+    _player?.dispose();
     super.dispose();
+  }
+
+  double get _aspectRatio {
+    final player = _player;
+    if (player == null) return 16 / 9;
+    final width = player.state.width;
+    final height = player.state.height;
+    if (width != null && height != null && width > 0 && height > 0) {
+      return width / height;
+    }
+    return 16 / 9;
   }
 
   Future<void> _saveToGallery(BuildContext context) async {
@@ -269,7 +293,7 @@ class _RelayLocalVideoPreviewPageState extends State<RelayLocalVideoPreviewPage>
 
   @override
   Widget build(BuildContext context) {
-    final controller = _controller;
+    final videoController = _videoController;
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -281,11 +305,11 @@ class _RelayLocalVideoPreviewPageState extends State<RelayLocalVideoPreviewPage>
                 style: TextStyle(color: Colors.white),
               ),
             )
-          else if (controller != null && controller.value.isInitialized)
+          else if (_isReady && videoController != null)
             Center(
               child: AspectRatio(
-                aspectRatio: controller.value.aspectRatio,
-                child: VideoPlayer(controller),
+                aspectRatio: _aspectRatio,
+                child: Video(controller: videoController),
               ),
             )
           else
@@ -300,7 +324,7 @@ class _RelayLocalVideoPreviewPageState extends State<RelayLocalVideoPreviewPage>
               icon: const Icon(Icons.close, color: Colors.white, size: 28),
             ),
           ),
-          if (controller != null && controller.value.isInitialized)
+          if (_isReady)
             Positioned(
               left: 0,
               right: 0,
@@ -310,16 +334,17 @@ class _RelayLocalVideoPreviewPageState extends State<RelayLocalVideoPreviewPage>
                 children: [
                   IconButton(
                     onPressed: () {
-                      final value = controller.value;
-                      if (value.isPlaying) {
-                        controller.pause();
+                      final player = _player;
+                      if (player == null) return;
+                      if (player.state.playing) {
+                        player.pause();
                       } else {
-                        controller.play();
+                        player.play();
                       }
                       setState(() {});
                     },
                     icon: Icon(
-                      controller.value.isPlaying
+                      (_player?.state.playing ?? false)
                           ? Icons.pause_circle_filled
                           : Icons.play_circle_filled,
                       color: Colors.white,

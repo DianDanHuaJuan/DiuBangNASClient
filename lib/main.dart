@@ -2,10 +2,13 @@
 /// 文件职责：提供应用唯一入口，启动应用引导
 /// 文件对外接口：main
 import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
 import 'app/bootstrap.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  MediaKit.ensureInitialized();
 
   PaintingBinding.instance.imageCache.maximumSize = 2000;
   PaintingBinding.instance.imageCache.maximumSizeBytes = 200 << 20;

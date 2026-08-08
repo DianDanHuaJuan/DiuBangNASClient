@@ -23,6 +23,7 @@ import '../../core/node/unified_node_store.dart';
 import '../../core/network/trusted_media_cache_service.dart';
 import '../../core/network/trusted_server_http_client_factory.dart';
 import '../../core/network/trusted_server_store.dart';
+import '../../core/network/media_kit_tls_provider.dart';
 import '../../core/task/task_queue.dart';
 import '../../core/task/task_scheduler.dart';
 import '../../core/network/nas_api_client.dart';
@@ -158,6 +159,7 @@ class ServiceLocator {
   TaskScheduler? _taskScheduler;
   TrustedServerStore? _trustedServerStore;
   TrustedServerHttpClientFactory? _trustedServerHttpClientFactory;
+  MediaKitTlsProvider? _mediaKitTlsProvider;
   TrustedMediaCacheService? _trustedMediaCacheService;
   PairingClient? _pairingClient;
   BenchmarkRemoteDataSource? _benchmarkRemoteDataSource;
@@ -225,6 +227,9 @@ class ServiceLocator {
     _trustedServerHttpClientFactory = TrustedServerHttpClientFactory(
       trustedServerStore: _trustedServerStore!,
     );
+    _mediaKitTlsProvider = MediaKitTlsProvider(
+      trustedServerStore: _trustedServerStore!,
+    );
     _trustedMediaCacheService = TrustedMediaCacheService(
       trustedHttpClientFactory: _trustedServerHttpClientFactory!,
     );
@@ -271,6 +276,7 @@ class ServiceLocator {
   TrustedServerStore get trustedServerStore => _trustedServerStore!;
   TrustedServerHttpClientFactory get trustedServerHttpClientFactory =>
       _trustedServerHttpClientFactory!;
+  MediaKitTlsProvider get mediaKitTlsProvider => _mediaKitTlsProvider!;
   TrustedMediaCacheService get trustedMediaCacheService =>
       _trustedMediaCacheService!;
   PairingClient get pairingClient => _pairingClient!;

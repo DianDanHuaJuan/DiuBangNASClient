@@ -5,16 +5,14 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:chewie/chewie.dart';
 import 'package:extended_image/extended_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../../app/di/service_locator.dart';
 import '../../../../core/image/extended_image_cache_coordinator.dart';
-import '../../../../core/network/trusted_video_player_bridge.dart';
-import '../../domain/entities/preview_strategy.dart';
 import '../../domain/entities/preview_video_source.dart';
 
 typedef VideoFullscreenChanged = Future<void> Function(bool isFullscreen);
@@ -58,35 +56,40 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
   static const Duration _completionTolerance = Duration(milliseconds: 200);
   static const Duration _deactivateDisposeDelay = Duration(milliseconds: 500);
   static const Duration _initDebounce = Duration(milliseconds: 150);
-  static const Duration _diagThrottle = Duration(seconds: 1);
   static const int _maxDebugLogs = 200;
-  static const int _hlsLocalSeekSlackMs = 2000;
-  static const int _hlsSeekJumpThresholdMs = 5000;
+  /// 可选播放倍速档位
+  static const List<double> _speedOptions = [0.5, 1.0, 1.25, 1.5, 2.0];
+  /// 长按临时倍速
+  static const double _longPressSpeed = 2.0;
+  /// 双击快进/快退步长
+  static const Duration _seekStep = Duration(seconds: 5);
 
   final List<String> _debugLogs = <String>[];
-  final ExtendedImageCacheCoordinator _cacheCoordinator =
-      serviceLocator.extendedImageCacheCoordinator;
-  final TrustedVideoPlayerBridge _trustedVideoPlayerBridge =
-      TrustedVideoPlayerBridge();
 
-  VideoPlayerController? _controller;
+  Player? _player;
+  VideoController? _videoController;
+  StreamSubscription<Duration>? _positionSub;
+  StreamSubscription<Duration>? _durationSub;
+  StreamSubscription<bool>? _playingSub;
+  StreamSubscription<bool>? _completedSub;
+  StreamSubscription<bool>? _bufferingSub;
+  StreamSubscription<String>? _errorSub;
+
   Timer? _hideControlsTimer;
   Timer? _deferredDisposeTimer;
-  bool _isInitialized = false;
+  bool _isReady = false;
   bool _hasError = false;
   String? _errorMessage;
   bool _showControls = true;
   int _loadVersion = 0;
-  DateTime? _lastDiagAt;
-  bool? _lastDiagPlaying;
-  bool? _lastDiagBuffering;
-  int _hlsOriginMs = 0;
-  bool _hlsSeekInFlight = false;
-  bool _applyingHlsTimeline = false;
-  /// Exo-reported duration for the current FFmpeg job (encode frontier), not meta.
-  int _exoNativeDurationMs = 0;
-  bool _scrubbing = false;
-  int _lastDisplayPosMs = 0;
+  /// 当前播放倍速
+  double _playbackSpeed = 1.0;
+  /// 长按期间保存的原倍速（松手恢复）
+  double? _speedBeforeLongPress;
+  /// 是否正在长按倍速
+  bool _isLongPressing = false;
+  /// 拖拽进度条期间暂存的 position（不直接 seek，松手才 seek）
+  Duration? _scrubPosition;
 
   @override
   void initState() {
@@ -149,7 +152,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     }
 
     setState(() {
-      _isInitialized = false;
+      _isReady = false;
       _hasError = false;
       _errorMessage = null;
       _showControls = true;
@@ -159,11 +162,6 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
   Future<void> _initializePlayer() async {
     final loadVersion = ++_loadVersion;
     final videoUrl = widget.source.videoUrl.trim();
-    _hlsOriginMs = 0;
-    _hlsSeekInFlight = false;
-    _exoNativeDurationMs = 0;
-    _scrubbing = false;
-    _lastDisplayPosMs = 0;
 
     _hideControlsTimer?.cancel();
     _deferredDisposeTimer?.cancel();
@@ -179,7 +177,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
 
     if (!widget.isActive) {
       setState(() {
-        _isInitialized = false;
+        _isReady = false;
         _hasError = false;
         _errorMessage = null;
         _showControls = true;
@@ -190,7 +188,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     if (videoUrl.isEmpty) {
       _appendDebugLog('视频地址为空');
       setState(() {
-        _isInitialized = false;
+        _isReady = false;
         _hasError = true;
         _errorMessage = '视频播放地址为空';
         _showControls = true;
@@ -203,12 +201,11 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
       'host=${_safeVideoHost(videoUrl)} '
       'durationMs=${widget.source.durationMs} '
       'autoPlay=${widget.autoPlay} '
-      'prefersNetwork=$_prefersNetworkPlayback '
       'headerKeys=${widget.source.headers?.keys.toList() ?? const <String>[]}',
     );
 
     setState(() {
-      _isInitialized = false;
+      _isReady = false;
       _hasError = false;
       _errorMessage = null;
       _showControls = true;
@@ -219,204 +216,141 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     }
 
     try {
-      final controller = await _createVideoController(
-        videoUrl: videoUrl,
-        loadVersion: loadVersion,
+      final player = Player();
+      final controller = VideoController(player);
+
+      _player = player;
+      _videoController = controller;
+
+      // 配置 TLS（自签名 HTTPS）
+      await serviceLocator.mediaKitTlsProvider.configurePlayer(
+        player,
+        videoUrl,
       );
-      if (controller == null) {
+
+      _subscribeStreams(player);
+
+      // 应用当前倍速
+      await player.setRate(_playbackSpeed);
+
+      await player.open(
+        Media(
+          videoUrl,
+          httpHeaders: widget.source.headers ?? const <String, String>{},
+        ),
+        play: widget.autoPlay,
+      );
+
+      if (!mounted || loadVersion != _loadVersion) {
+        await _disposeController();
         return;
       }
-      await _activateController(controller, loadVersion);
+
+      final initialPosition = widget.initialPosition;
+      if (initialPosition != null) {
+        await player.seek(
+          _normalizePosition(initialPosition, _effectiveDuration()),
+        );
+      }
+
+      if (!mounted || loadVersion != _loadVersion) {
+        await _disposeController();
+        return;
+      }
+
+      setState(() {
+        _isReady = true;
+        _showControls = true;
+      });
+      _notifyPlaybackState();
+      if (widget.autoPlay) {
+        _restartAutoHideTimer();
+      }
+      _appendDebugLog('播放器初始化完成');
     } catch (error, st) {
-      _appendDebugLog('控制器初始化失败：$error');
+      _appendDebugLog('播放器初始化失败：$error');
       _appendDebugLog('$st');
       if (!mounted || loadVersion != _loadVersion) {
         return;
       }
 
       setState(() {
-        _controller = null;
-        _isInitialized = false;
+        _isReady = false;
         _hasError = true;
-        _errorMessage = _prefersNetworkPlayback
-            ? '无法流式播放该视频'
-            : '视频初始化失败：$error';
+        _errorMessage = '视频初始化失败：$error';
         _showControls = true;
       });
-      if (_prefersNetworkPlayback) {
-        unawaited(_showStreamPlaybackFailedDialog());
-      }
     }
   }
 
-  Future<VideoPlayerController?> _createVideoController({
-    required String videoUrl,
-    required int loadVersion,
-  }) async {
-    if (_prefersNetworkPlayback) {
-      final networkController = await _tryCreateNetworkController(
-        videoUrl: videoUrl,
-        loadVersion: loadVersion,
-      );
-      if (networkController != null) {
-        return networkController;
+  void _subscribeStreams(Player player) {
+    _positionSub = player.stream.position.listen((position) {
+      if (!mounted) return;
+      _notifyPlaybackState();
+      if (_isCompleted()) {
+        _hideControlsTimer?.cancel();
+        if (!_showControls) {
+          setState(() => _showControls = true);
+        }
       }
-      if (!mounted || loadVersion != _loadVersion) {
-        return null;
-      }
-      setState(() {
-        _controller = null;
-        _isInitialized = false;
-        _hasError = true;
-        _errorMessage = '无法流式播放该视频';
-        _showControls = true;
-      });
-      unawaited(_showStreamPlaybackFailedDialog());
-      return null;
-    }
-
-    _appendDebugLog('开始缓存视频文件：host=${_safeVideoHost(videoUrl)}');
-    final cachedVideoFile = await _cacheCoordinator.cacheFile(
-      url: videoUrl,
-      cacheKey: widget.source.videoCacheKey,
-      headers: widget.source.headers,
-    );
-    if (!mounted || loadVersion != _loadVersion || !widget.isActive) {
-      return null;
-    }
-
-    _appendDebugLog('使用本地缓存视频初始化：host=${_safeVideoHost(videoUrl)}');
-    final controller = VideoPlayerController.file(cachedVideoFile);
-    await controller.initialize();
-    return controller;
-  }
-
-  Future<VideoPlayerController?> _tryCreateNetworkController({
-    required String videoUrl,
-    required int loadVersion,
-  }) async {
-    VideoPlayerController? controller;
-    try {
-      await _trustedVideoPlayerBridge.ensureTrustForUrl(
-        url: videoUrl,
-        trustedServerStore: serviceLocator.trustedServerStore,
-      );
-      _appendDebugLog(
-        '优先尝试在线播放：host=${_safeVideoHost(videoUrl)} '
-        'formatHint=${widget.source.strategy == PreviewStrategy.streaming ? 'hls' : 'auto'}',
-      );
-      controller = VideoPlayerController.networkUrl(
-        Uri.parse(videoUrl),
-        httpHeaders: widget.source.headers ?? const <String, String>{},
-        formatHint: widget.source.strategy == PreviewStrategy.streaming
-            ? VideoFormat.hls
-            : null,
-      );
-      await controller.initialize();
-      if (!mounted || loadVersion != _loadVersion || !widget.isActive) {
-        await controller.dispose();
-        return null;
-      }
-      _appendDebugLog('在线播放初始化完成');
-      _logPlaybackSnapshot(controller.value, reason: 'network-ready');
-      return controller;
-    } catch (error) {
-      _appendDebugLog('在线播放初始化失败：$error');
-      await controller?.dispose();
-      return null;
-    }
-  }
-
-  Future<void> _activateController(
-    VideoPlayerController controller,
-    int loadVersion,
-  ) async {
-    if (!mounted || loadVersion != _loadVersion) {
-      await controller.dispose();
-      return;
-    }
-
-    _controller = controller;
-    controller.addListener(_handleControllerChanged);
-    _syncHlsOrEffectiveDuration(controller);
-
-    final initialPosition = widget.initialPosition;
-    if (initialPosition != null) {
-      await controller.seekTo(
-        _normalizePosition(
-          initialPosition,
-          _effectiveDuration(controller.value),
-        ),
-      );
-    }
-
-    if (widget.autoPlay) {
-      await controller.play();
-    } else {
-      await controller.pause();
-    }
-
-    if (!mounted || loadVersion != _loadVersion) {
-      controller.removeListener(_handleControllerChanged);
-      if (identical(_controller, controller)) {
-        _controller = null;
-      }
-      await controller.dispose();
-      return;
-    }
-
-    setState(() {
-      _isInitialized = true;
-      _showControls = true;
     });
-    _notifyPlaybackState(controller.value);
-    if (widget.autoPlay) {
-      _restartAutoHideTimer();
-    }
-    _appendDebugLog('控制器初始化完成');
-  }
-
-  bool get _prefersNetworkPlayback =>
-      widget.source.strategy == PreviewStrategy.progressive ||
-      widget.source.strategy == PreviewStrategy.streaming;
-
-  Future<void> _showStreamPlaybackFailedDialog() async {
-    if (!mounted) {
-      return;
-    }
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('无法流式播放'),
-          content: const Text('当前视频无法流式播放。你可以下载后再查看。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                widget.onDownloadRequested?.call();
-              },
-              child: const Text('下载'),
-            ),
-          ],
-        );
-      },
-    );
+    _durationSub = player.stream.duration.listen((_) {
+      if (mounted) setState(() {});
+    });
+    _playingSub = player.stream.playing.listen((playing) {
+      if (!mounted) return;
+      setState(() {});
+      _notifyPlaybackState();
+      if (playing) {
+        _restartAutoHideTimer();
+      } else {
+        _hideControlsTimer?.cancel();
+        if (!_showControls) {
+          setState(() => _showControls = true);
+        }
+      }
+    });
+    _completedSub = player.stream.completed.listen((completed) {
+      if (!mounted) return;
+      if (completed) {
+        setState(() => _showControls = true);
+        _hideControlsTimer?.cancel();
+      }
+    });
+    _bufferingSub = player.stream.buffering.listen((_) {
+      if (mounted) setState(() {});
+    });
+    _errorSub = player.stream.error.listen((error) {
+      if (!mounted) return;
+      _appendDebugLog('播放错误：$error');
+      setState(() {
+        _hasError = true;
+        _errorMessage = error;
+      });
+    });
   }
 
   Future<void> _disposeController() async {
-    final controller = _controller;
-    _controller = null;
-    if (controller == null) {
-      return;
-    }
+    final player = _player;
+    _player = null;
+    _videoController = null;
 
-    controller.removeListener(_handleControllerChanged);
-    await controller.dispose();
+    await _positionSub?.cancel();
+    await _durationSub?.cancel();
+    await _playingSub?.cancel();
+    await _completedSub?.cancel();
+    await _bufferingSub?.cancel();
+    await _errorSub?.cancel();
+    _positionSub = null;
+    _durationSub = null;
+    _playingSub = null;
+    _completedSub = null;
+    _bufferingSub = null;
+    _errorSub = null;
+
+    if (player != null) {
+      await player.dispose();
+    }
   }
 
   void _appendDebugLog(String message) {
@@ -437,42 +371,6 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     } catch (_) {
       return '(invalid-url)';
     }
-  }
-
-  String _videoUrlWithSeekCacheBuster(
-    String videoUrl, {
-    required int originMs,
-  }) {
-    final uri = Uri.parse(videoUrl);
-    final params = Map<String, String>.from(uri.queryParameters);
-    params['_originMs'] = '$originMs';
-    params['_r'] = '${DateTime.now().millisecondsSinceEpoch}';
-    return uri.replace(queryParameters: params).toString();
-  }
-
-  void _logPlaybackSnapshot(VideoPlayerValue value, {required String reason}) {
-    final now = DateTime.now();
-    final playingChanged = _lastDiagPlaying != value.isPlaying;
-    final bufferingChanged = _lastDiagBuffering != value.isBuffering;
-    final throttled =
-        _lastDiagAt != null && now.difference(_lastDiagAt!) < _diagThrottle;
-    if (!playingChanged &&
-        !bufferingChanged &&
-        reason == 'tick' &&
-        throttled) {
-      return;
-    }
-    _lastDiagAt = now;
-    _lastDiagPlaying = value.isPlaying;
-    _lastDiagBuffering = value.isBuffering;
-    _appendDebugLog(
-      '$reason playing=${value.isPlaying} buffering=${value.isBuffering} '
-      'pos=${value.position.inMilliseconds}ms '
-      'duration=${value.duration.inMilliseconds}ms '
-      'metaDurationMs=${widget.source.durationMs} '
-      'bufferedEnd=${value.buffered.isEmpty ? 0 : value.buffered.last.end.inMilliseconds}ms '
-      'size=${value.size.width.toInt()}x${value.size.height.toInt()}',
-    );
   }
 
   void _showDebugLogs() {
@@ -520,343 +418,35 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     );
   }
 
-  void _handleControllerChanged() {
-    final controller = _controller;
-    if (!mounted || controller == null) {
-      return;
-    }
-
-    final value = controller.value;
-    if (value.hasError) {
-      final nextError = value.errorDescription ?? '视频播放失败';
-      if (_errorMessage != nextError || !_hasError) {
-        _appendDebugLog('播放错误：$nextError');
-        _logPlaybackSnapshot(value, reason: 'error');
-        setState(() {
-          _hasError = true;
-          _errorMessage = nextError;
-        });
-      }
-      return;
-    }
-
-    if (!value.isInitialized) {
-      return;
-    }
-
-    _captureExoNativeDuration(value);
-    _syncHlsOrEffectiveDuration(controller);
-    _maybeRestartHlsAfterSeekJump(controller);
-    _notifyPlaybackState(controller.value);
-    _logPlaybackSnapshot(controller.value, reason: 'tick');
-
-    if (!controller.value.isPlaying || _isCompleted(controller.value)) {
-      _hideControlsTimer?.cancel();
-      if (!_showControls) {
-        setState(() {
-          _showControls = true;
-        });
-      }
-    }
-  }
-
-  void _captureExoNativeDuration(VideoPlayerValue value) {
-    if (widget.source.strategy != PreviewStrategy.streaming) {
-      return;
-    }
-    final metaMs = widget.source.durationMs;
-    final platformDurationMs = value.duration.inMilliseconds;
-    if (platformDurationMs <= 0) {
-      return;
-    }
-    // Only accept durations that are clearly the encode frontier, not meta.
-    if (metaMs != null && platformDurationMs >= metaMs - 500) {
-      return;
-    }
-    if (platformDurationMs > _exoNativeDurationMs) {
-      _exoNativeDurationMs = platformDurationMs;
-    }
-  }
-
-  /// Prefer server metadata duration when ExoPlayer reports a shorter value,
-  /// so seekTo / Chewie progress scrub are not clamped to a wrong timeline.
-  void _syncEffectiveDuration(VideoPlayerController controller) {
-    final metaMs = widget.source.durationMs;
-    if (metaMs == null || metaMs <= 0) {
-      return;
-    }
-    final metaDuration = Duration(milliseconds: metaMs);
-    if (controller.value.duration >= metaDuration) {
-      return;
-    }
-    controller.value = controller.value.copyWith(duration: metaDuration);
-  }
-
-  void _syncHlsOrEffectiveDuration(VideoPlayerController controller) {
-    if (widget.source.strategy != PreviewStrategy.streaming) {
-      _syncEffectiveDuration(controller);
-      return;
-    }
-    _syncStreamingTimeline(controller);
-  }
-
-  /// Map EVENT HLS stream-local position onto the full meta timeline after a
-  /// server seek-restart (origin = absolute ms where the new FFmpeg job began).
-  void _syncStreamingTimeline(VideoPlayerController controller) {
-    if (_applyingHlsTimeline || _hlsSeekInFlight) {
-      return;
-    }
-    final metaMs = widget.source.durationMs;
-    if (metaMs == null || metaMs <= 0) {
-      return;
-    }
-    final metaDuration = Duration(milliseconds: metaMs);
-    final platformPosMs = controller.value.position.inMilliseconds;
-    // Platform events are stream-local (0-based for the current FFmpeg job).
-    // If Chewie already seeked using the remapped absolute timeline, position
-    // may already be >= origin; keep absolute in that case.
-    final bool looksAbsolute =
-        _hlsOriginMs > 0 && platformPosMs >= _hlsOriginMs;
-    final displayMs = looksAbsolute
-        ? platformPosMs.clamp(0, metaMs)
-        : (_hlsOriginMs + platformPosMs).clamp(0, metaMs);
-    final displayPos = Duration(milliseconds: displayMs);
-    if (controller.value.duration == metaDuration &&
-        controller.value.position == displayPos) {
-      return;
-    }
-    _applyingHlsTimeline = true;
-    controller.value = controller.value.copyWith(
-      duration: metaDuration,
-      position: displayPos,
-    );
-    _applyingHlsTimeline = false;
-  }
-
-  int _streamingBufferedEndRaw(VideoPlayerValue value) {
-    if (value.buffered.isEmpty) {
-      return 0;
-    }
-    return value.buffered.last.end.inMilliseconds;
-  }
-
-  /// Trusted encode frontier: never trust bufferedEnd past exo native duration
-  /// (beyond-duration seeks invent a fake buffered point).
-  int _streamingFrontierMs(VideoPlayerValue value) {
-    final bufferedEndRaw = _streamingBufferedEndRaw(value);
-    final exoDur = _exoNativeDurationMs > 0
-        ? _exoNativeDurationMs
-        : bufferedEndRaw;
-    final safeBufferedEnd = bufferedEndRaw < exoDur ? bufferedEndRaw : exoDur;
-    return _hlsOriginMs + safeBufferedEnd;
-  }
-
-  bool _shouldRestartHlsForTarget(int targetMs, VideoPlayerValue value) {
-    final frontierMs = _streamingFrontierMs(value);
-    final relativeMs = targetMs - _hlsOriginMs;
-    final beyondEncode =
-        _exoNativeDurationMs > 0 && relativeMs > _exoNativeDurationMs;
-    final beyondFrontier = targetMs > frontierMs + _hlsLocalSeekSlackMs;
-    return beyondEncode || beyondFrontier || relativeMs < 0;
-  }
-
-  Future<void> _handleStreamingScrubEnd() async {
-    _scrubbing = false;
-    _restartAutoHideTimer();
-    if (widget.source.strategy != PreviewStrategy.streaming) {
-      return;
-    }
-    final controller = _controller;
-    if (controller == null || !_isInitialized || _hlsSeekInFlight) {
-      return;
-    }
-
-    final targetMs = controller.value.position.inMilliseconds;
-    await _applyStreamingSeekTarget(targetMs, reason: 'scrubEnd');
-  }
-
-  void _maybeRestartHlsAfterSeekJump(VideoPlayerController controller) {
-    if (widget.source.strategy != PreviewStrategy.streaming) {
-      _lastDisplayPosMs = controller.value.position.inMilliseconds;
-      return;
-    }
-    if (_hlsSeekInFlight || _scrubbing || _applyingHlsTimeline) {
-      _lastDisplayPosMs = controller.value.position.inMilliseconds;
-      return;
-    }
-
-    final displayMs = controller.value.position.inMilliseconds;
-    final jump = (displayMs - _lastDisplayPosMs).abs();
-    final previous = _lastDisplayPosMs;
-    _lastDisplayPosMs = displayMs;
-
-    // Cover tap-to-seek on Chewie (no onDragEnd) and any beyond-duration seek.
-    if (previous <= 0 || jump < _hlsSeekJumpThresholdMs) {
-      return;
-    }
-    if (!_shouldRestartHlsForTarget(displayMs, controller.value)) {
-      return;
-    }
-    _appendDebugLog(
-      'HLS seek-jump detected from=$previous to=$displayMs jump=$jump',
-    );
-    unawaited(_applyStreamingSeekTarget(displayMs, reason: 'seekJump'));
-  }
-
-  Future<void> _applyStreamingSeekTarget(
-    int targetMs, {
-    required String reason,
-  }) async {
-    final controller = _controller;
-    if (controller == null || !_isInitialized || _hlsSeekInFlight) {
-      return;
-    }
-
-    final value = controller.value;
-    final frontierMs = _streamingFrontierMs(value);
-    final relativeMs = targetMs - _hlsOriginMs;
-    final restart = _shouldRestartHlsForTarget(targetMs, value);
-
-    _appendDebugLog(
-      'HLS scrub decide reason=$reason target=$targetMs '
-      'frontier=$frontierMs exoDur=$_exoNativeDurationMs '
-      'origin=$_hlsOriginMs relative=$relativeMs → '
-      '${restart ? 'restart' : 'local'}',
-    );
-
-    if (!restart) {
-      await controller.seekTo(
-        Duration(milliseconds: relativeMs < 0 ? 0 : relativeMs),
-      );
-      return;
-    }
-
-    await _restartHlsAt(targetMs);
-  }
-
-  Future<void> _restartHlsAt(int targetMs) async {
-    if (widget.source.strategy != PreviewStrategy.streaming) {
-      return;
-    }
-    if (_hlsSeekInFlight) {
-      return;
-    }
-    _hlsSeekInFlight = true;
-    final loadVersion = ++_loadVersion;
-    _exoNativeDurationMs = 0;
-    _lastDisplayPosMs = targetMs < 0 ? 0 : targetMs;
-    _appendDebugLog(
-      'HLS seek-restart begin targetMs=$targetMs originMs=$_hlsOriginMs',
-    );
-
-    try {
-      await serviceLocator.apiClient.post<Map<String, dynamic>>(
-        '/api/v1/preview/hls/seek',
-        queryParameters: <String, dynamic>{
-          'path': widget.source.nasPath.toApiPath(),
-          'tMs': targetMs,
-        },
-        parser: (json) {
-          if (json is Map<String, dynamic>) {
-            return json;
-          }
-          if (json is Map) {
-            return json.map((k, v) => MapEntry(k.toString(), v));
-          }
-          return <String, dynamic>{};
-        },
-      );
-      if (!mounted || loadVersion != _loadVersion) {
-        return;
-      }
-
-      _hlsOriginMs = targetMs < 0 ? 0 : targetMs;
-      await _disposeController();
-      if (!mounted || loadVersion != _loadVersion) {
-        return;
-      }
-
-      setState(() {
-        _isInitialized = false;
-        _hasError = false;
-        _errorMessage = null;
-        _showControls = true;
-      });
-
-      final seekUrl = _videoUrlWithSeekCacheBuster(
-        widget.source.videoUrl,
-        originMs: _hlsOriginMs,
-      );
-      final controller = await _tryCreateNetworkController(
-        videoUrl: seekUrl,
-        loadVersion: loadVersion,
-      );
-      if (controller == null || !mounted || loadVersion != _loadVersion) {
-        return;
-      }
-      await _activateController(controller, loadVersion);
-      if (!mounted || loadVersion != _loadVersion) {
-        return;
-      }
-      await controller.play();
-      _appendDebugLog(
-        'HLS seek-restart done originMs=$_hlsOriginMs '
-        'exoDurationMs=${controller.value.duration.inMilliseconds}',
-      );
-    } catch (error, st) {
-      _appendDebugLog('HLS seek-restart failed: $error');
-      _appendDebugLog('$st');
-      if (!mounted || loadVersion != _loadVersion) {
-        return;
-      }
-      setState(() {
-        _hasError = true;
-        _errorMessage = '定位播放失败：$error';
-        _showControls = true;
-      });
-    } finally {
-      _hlsSeekInFlight = false;
-    }
-  }
-
   Future<void> _togglePlayback() async {
-    final controller = _controller;
-    if (controller == null || !_isInitialized) {
+    final player = _player;
+    if (player == null || !_isReady) {
       return;
     }
 
-    final value = controller.value;
-    if (_isCompleted(value)) {
-      await controller.seekTo(Duration.zero);
+    if (_isCompleted()) {
+      await player.seek(Duration.zero);
     }
 
-    if (value.isPlaying) {
-      await controller.pause();
-      if (!mounted) {
-        return;
-      }
-      _notifyPlaybackState(controller.value);
-      setState(() {
-        _showControls = true;
-      });
+    if (player.state.playing) {
+      await player.pause();
+      if (!mounted) return;
+      _notifyPlaybackState();
+      setState(() => _showControls = true);
       _hideControlsTimer?.cancel();
       return;
     }
 
-    await controller.play();
-    if (!mounted) {
-      return;
-    }
-    _notifyPlaybackState(controller.value);
-    setState(() {
-      _showControls = true;
-    });
+    await player.play();
+    if (!mounted) return;
+    _notifyPlaybackState();
+    setState(() => _showControls = true);
     _restartAutoHideTimer();
   }
 
   Future<void> _toggleFullscreen() async {
     final onFullscreenChanged = widget.onFullscreenChanged;
-    if (_controller == null || !_isInitialized || onFullscreenChanged == null) {
+    if (_player == null || !_isReady || onFullscreenChanged == null) {
       return;
     }
 
@@ -864,7 +454,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
   }
 
   void _handleSurfaceTap() {
-    if (!_isInitialized) {
+    if (!_isReady) {
       return;
     }
 
@@ -879,9 +469,125 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     }
   }
 
+  // === 倍速播放 ===
+
+  Future<void> _setPlaybackSpeed(double speed) async {
+    final player = _player;
+    if (player == null || !_isReady) {
+      return;
+    }
+    await player.setRate(speed);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _playbackSpeed = speed;
+    });
+  }
+
+  Widget _buildSpeedButton() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: PopupMenuButton<double>(
+        tooltip: '播放倍速',
+        onSelected: (speed) => unawaited(_setPlaybackSpeed(speed)),
+        itemBuilder: (context) => _speedOptions
+            .map(
+              (speed) => PopupMenuItem<double>(
+                value: speed,
+                child: Row(
+                  children: [
+                    if (speed == _playbackSpeed)
+                      const Icon(Icons.check, size: 18)
+                    else
+                      const SizedBox(width: 18),
+                    const SizedBox(width: 8),
+                    Text('${_formatSpeed(speed)}x'),
+                  ],
+                ),
+              ),
+            )
+            .toList(),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.32),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Text(
+            '${_formatSpeed(_playbackSpeed)}x',
+            style: const TextStyle(color: Colors.white, fontSize: 12),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _formatSpeed(double speed) {
+    if (speed == speed.roundToDouble()) {
+      return speed.toStringAsFixed(1);
+    }
+    return speed.toString();
+  }
+
+  // === 双击快进/快退 5 秒 ===
+
+  void _handleDoubleTapSeek(TapDownDetails details) {
+    final player = _player;
+    if (player == null || !_isReady) {
+      return;
+    }
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null) {
+      return;
+    }
+    final width = box.size.width;
+    final isRightHalf = details.localPosition.dx > width / 2;
+
+    final current = _safePosition();
+    final target = isRightHalf ? current + _seekStep : current - _seekStep;
+    unawaited(_seekToClamped(target));
+  }
+
+  Future<void> _seekToClamped(Duration target) async {
+    final player = _player;
+    if (player == null || !_isReady) {
+      return;
+    }
+    final duration = _effectiveDuration();
+    final clamped = _normalizePosition(target, duration);
+    await player.seek(clamped);
+  }
+
+  // === 长按 2 倍速 ===
+
+  void _beginLongPressSpeed() {
+    final player = _player;
+    if (player == null || !_isReady || _isLongPressing) {
+      return;
+    }
+    if (_playbackSpeed != _longPressSpeed) {
+      _speedBeforeLongPress = _playbackSpeed;
+    } else {
+      _speedBeforeLongPress = null;
+    }
+    _isLongPressing = true;
+    unawaited(_setPlaybackSpeed(_longPressSpeed));
+  }
+
+  void _endLongPressSpeed() {
+    if (!_isLongPressing) {
+      return;
+    }
+    _isLongPressing = false;
+    final restore = _speedBeforeLongPress ?? 1.0;
+    _speedBeforeLongPress = null;
+    unawaited(_setPlaybackSpeed(restore));
+  }
+
   void _restartAutoHideTimer() {
-    final controller = _controller;
-    if (controller == null || !controller.value.isPlaying) {
+    final player = _player;
+    if (player == null || !player.state.playing) {
       return;
     }
 
@@ -890,8 +596,8 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
       if (!mounted) {
         return;
       }
-      final currentController = _controller;
-      if (currentController == null || !currentController.value.isPlaying) {
+      final current = _player;
+      if (current == null || !current.state.playing) {
         return;
       }
       setState(() {
@@ -900,11 +606,37 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     });
   }
 
-  void _notifyPlaybackState(VideoPlayerValue value) {
-    if (!value.isInitialized) {
-      return;
+  void _notifyPlaybackState() {
+    final player = _player;
+    if (player == null) return;
+    widget.onPlaybackStateChanged?.call(_safePosition(), player.state.playing);
+  }
+
+  // === 进度条拖拽 ===
+
+  void _onProgressBarDragStart() {
+    _hideControlsTimer?.cancel();
+    if (!_showControls) {
+      setState(() => _showControls = true);
     }
-    widget.onPlaybackStateChanged?.call(_safePosition(value), value.isPlaying);
+  }
+
+  void _onProgressBarDragUpdate(double ratio) {
+    final duration = _effectiveDuration();
+    final target = Duration(
+      milliseconds: (duration.inMilliseconds * ratio).round(),
+    );
+    _scrubPosition = target;
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _onProgressBarDragEnd() async {
+    final target = _scrubPosition;
+    _scrubPosition = null;
+    if (target != null) {
+      await _seekToClamped(target);
+    }
+    _restartAutoHideTimer();
   }
 
   @override
@@ -917,39 +649,46 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
       return _buildErrorView();
     }
 
-    final controller = _controller;
+    final player = _player;
+    final controller = _videoController;
 
     return ColoredBox(
       color: Colors.black,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: _handleSurfaceTap,
+        onDoubleTapDown: _handleDoubleTapSeek,
+        onDoubleTap: () {},
+        onLongPressStart: (_) => _beginLongPressSpeed(),
+        onLongPressEnd: (_) => _endLongPressSpeed(),
         child: Stack(
           fit: StackFit.expand,
           children: [
             _buildPosterLayer(),
-            if (controller != null && _isInitialized)
-              ValueListenableBuilder<VideoPlayerValue>(
-                valueListenable: controller,
-                builder: (context, value, child) {
-                  return Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Center(
-                        child: AspectRatio(
-                          aspectRatio: value.aspectRatio > 0
-                              ? value.aspectRatio
-                              : 16 / 9,
-                          child: VideoPlayer(controller),
-                        ),
-                      ),
-                      _buildControlsOverlay(value),
-                    ],
-                  );
-                },
+            if (controller != null && player != null && _isReady)
+              Stack(
+                fit: StackFit.expand,
+                children: [
+                  Center(
+                    child: AspectRatio(
+                      aspectRatio: _aspectRatio,
+                      child: Video(controller: controller),
+                    ),
+                  ),
+                  _buildControlsOverlay(),
+                ],
               )
             else
               _buildLoadingLayer(),
+            if (_isLongPressing)
+              const Positioned(
+                top: 24,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: _LongPressSpeedBadge(),
+                ),
+              ),
           ],
         ),
       ),
@@ -985,11 +724,11 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     );
   }
 
-  Widget _buildControlsOverlay(VideoPlayerValue value) {
+  Widget _buildControlsOverlay() {
     final shouldShowControls =
-        _showControls || !value.isPlaying || _isCompleted(value);
-    final controller = _controller;
-    if (controller == null) {
+        _showControls || !_isPlaying || _isCompleted();
+    final player = _player;
+    if (player == null) {
       return const SizedBox.shrink();
     }
 
@@ -1040,7 +779,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
                     onPressed: _togglePlayback,
                     iconSize: 52,
                     color: Colors.white,
-                    icon: Icon(_resolvePrimaryActionIcon(value)),
+                    icon: Icon(_resolvePrimaryActionIcon()),
                   ),
                 ),
               ),
@@ -1052,51 +791,19 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    SizedBox(
-                      height: 28,
-                      child: MaterialVideoProgressBar(
-                        controller,
-                        height: 28,
-                        barHeight: 2,
-                        handleHeight: 6,
-                        colors: ChewieProgressColors(
-                          playedColor: Colors.white,
-                          handleColor: Colors.white,
-                          bufferedColor: Colors.white38,
-                          backgroundColor: Colors.white24,
-                        ),
-                        onDragStart: () {
-                          _scrubbing = true;
-                          _hideControlsTimer?.cancel();
-                          if (!_showControls) {
-                            setState(() {
-                              _showControls = true;
-                            });
-                          }
-                        },
-                        onDragEnd: () {
-                          if (widget.source.strategy ==
-                              PreviewStrategy.streaming) {
-                            unawaited(_handleStreamingScrubEnd());
-                          } else {
-                            _scrubbing = false;
-                            _restartAutoHideTimer();
-                          }
-                        },
-                      ),
-                    ),
+                    _buildProgressBar(),
                     const SizedBox(height: 8),
                     Row(
                       children: [
                         Text(
-                          _formatDuration(_safePosition(value)),
+                          _formatDuration(_displayPosition()),
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 12,
                           ),
                         ),
                         const Spacer(),
-                        if (value.isBuffering)
+                        if (_isBuffering)
                           const Row(
                             children: [
                               SizedBox(
@@ -1120,8 +827,9 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
                               SizedBox(width: 12),
                             ],
                           ),
+                        _buildSpeedButton(),
                         Text(
-                          _formatDuration(_effectiveDuration(value)),
+                          _formatDuration(_effectiveDuration()),
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 12,
@@ -1153,6 +861,88 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
           ),
         ),
       ),
+    );
+  }
+
+  /// 自建进度条：支持点击跳转与拖拽
+  Widget _buildProgressBar() {
+    final duration = _effectiveDuration();
+    final position = _displayPosition();
+    final progress = duration.inMicroseconds > 0
+        ? (position.inMicroseconds / duration.inMicroseconds)
+            .clamp(0.0, 1.0)
+        : 0.0;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final totalWidth = constraints.maxWidth;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: (details) {
+            _onProgressBarDragStart();
+            final ratio =
+                (details.localPosition.dx / totalWidth).clamp(0.0, 1.0);
+            unawaited(_seekToClamped(
+              Duration(
+                milliseconds: (duration.inMilliseconds * ratio).round(),
+              ),
+            ));
+          },
+          onHorizontalDragStart: (_) => _onProgressBarDragStart(),
+          onHorizontalDragUpdate: (details) {
+            final ratio =
+                (details.localPosition.dx / totalWidth).clamp(0.0, 1.0);
+            _onProgressBarDragUpdate(ratio);
+          },
+          onHorizontalDragEnd: (_) => unawaited(_onProgressBarDragEnd()),
+          child: SizedBox(
+            height: 28,
+            child: Center(
+              child: Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.centerLeft,
+                children: [
+                  // 背景轨道
+                  Container(
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  // 已播放部分
+                  FractionallySizedBox(
+                    alignment: Alignment.centerLeft,
+                    widthFactor: progress,
+                    child: Container(
+                      height: 3,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  // 拖拽手柄
+                  Positioned(
+                    left: (progress * totalWidth).clamp(
+                      0.0,
+                      (totalWidth - 6).clamp(0.0, double.infinity),
+                    ),
+                    child: Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1212,39 +1002,66 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     );
   }
 
-  IconData _resolvePrimaryActionIcon(VideoPlayerValue value) {
-    if (_isCompleted(value)) {
+  IconData _resolvePrimaryActionIcon() {
+    if (_isCompleted()) {
       return Icons.replay_rounded;
     }
-    return value.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded;
+    return _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded;
   }
 
-  bool _isCompleted(VideoPlayerValue value) {
-    final duration = _effectiveDuration(value);
-    if (!value.isInitialized || duration.inMicroseconds <= 0) {
-      return false;
+  bool get _isPlaying => _player?.state.playing ?? false;
+
+  bool get _isBuffering => _player?.state.buffering ?? false;
+
+  bool _isCompleted() {
+    final player = _player;
+    if (player == null) return false;
+    if (player.state.completed) return true;
+    final duration = _effectiveDuration();
+    if (duration.inMicroseconds <= 0) return false;
+    return _safePosition().compareTo(duration - _completionTolerance) >= 0;
+  }
+
+  double get _aspectRatio {
+    final player = _player;
+    if (player == null) return 16 / 9;
+    final width = player.state.width;
+    final height = player.state.height;
+    if (width != null && height != null && width > 0 && height > 0) {
+      return width / height;
     }
-    return value.position.compareTo(duration - _completionTolerance) >= 0;
+    return 16 / 9;
   }
 
-  Duration _effectiveDuration(VideoPlayerValue value) {
+  Duration _effectiveDuration() {
     final metaMs = widget.source.durationMs;
     if (metaMs != null && metaMs > 0) {
       return Duration(milliseconds: metaMs);
     }
-    return value.duration;
+    final player = _player;
+    if (player != null && player.state.duration.inMicroseconds > 0) {
+      return player.state.duration;
+    }
+    return Duration.zero;
   }
 
-  Duration _safePosition(VideoPlayerValue value) {
-    if (value.position.inMicroseconds < 0) {
+  Duration _safePosition() {
+    final player = _player;
+    if (player == null) return Duration.zero;
+    final position = player.state.position;
+    if (position.inMicroseconds < 0) {
       return Duration.zero;
     }
-    final duration = _effectiveDuration(value);
-    if (duration.inMicroseconds > 0 &&
-        value.position.compareTo(duration) > 0) {
+    final duration = _effectiveDuration();
+    if (duration.inMicroseconds > 0 && position.compareTo(duration) > 0) {
       return duration;
     }
-    return value.position;
+    return position;
+  }
+
+  /// 拖拽时显示暂存位置，否则显示实际播放位置
+  Duration _displayPosition() {
+    return _scrubPosition ?? _safePosition();
   }
 
   Duration _normalizePosition(Duration position, Duration duration) {
@@ -1411,6 +1228,33 @@ class _TrustedPosterImageState extends State<_TrustedPosterImage> {
     }
     return const Center(
       child: Icon(Icons.videocam_outlined, color: Colors.white54, size: 64),
+    );
+  }
+}
+
+/// 长按倍速时显示的提示徽章
+class _LongPressSpeedBadge extends StatelessWidget {
+  const _LongPressSpeedBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.fast_forward_rounded, color: Colors.white, size: 16),
+          SizedBox(width: 4),
+          Text(
+            '2.0x 倍速播放中',
+            style: TextStyle(color: Colors.white, fontSize: 13),
+          ),
+        ],
+      ),
     );
   }
 }
