@@ -37,6 +37,8 @@ class FileRepositoryImpl implements FileRepository {
           'category': params.category.name,
           if (params.cursor != null && params.cursor!.isNotEmpty)
             'cursor': params.cursor,
+          if (params.sortBy != null) 'sortBy': params.sortBy,
+          if (params.sortOrder != null) 'sortOrder': params.sortOrder,
         },
       );
 

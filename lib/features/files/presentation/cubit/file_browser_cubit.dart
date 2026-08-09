@@ -61,6 +61,10 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
 
   String _currentRootId = 'fs';
   FileCategory _currentCategory = FileCategory.photo;
+  /// 当前排序字段：'modified'（默认） | 'size'
+  String _currentSortBy = 'modified';
+  /// 当前排序方向：'desc'（默认） | 'asc'
+  String _currentSortOrder = 'desc';
   Timer? _thumbnailLoadTimer;
   Timer? _thumbnailBackoffTimer;
   StreamSubscription<int>? _thumbnailSubscription;
@@ -76,6 +80,8 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
 
   String get currentRootId => _currentRootId;
   FileCategory get currentCategory => _currentCategory;
+  String get currentSortBy => _currentSortBy;
+  String get currentSortOrder => _currentSortOrder;
 
   Future<void> loadDirectory(NasPath path) async {
     final previousLoadedState = state is FileBrowserLoaded
@@ -181,6 +187,22 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
     _currentCategory = category;
     final currentState = state;
     if (currentState is FileBrowserLoaded) {
+      await loadDirectory(currentState.currentPath);
+    }
+  }
+
+  /// 切换排序方式并重新加载当前目录。
+  /// sortBy: 'modified' | 'size'
+  /// sortOrder: 'asc' | 'desc'
+  Future<void> changeSort(String sortBy, String sortOrder) async {
+    if (_currentSortBy == sortBy && _currentSortOrder == sortOrder) {
+      return;
+    }
+    _currentSortBy = sortBy;
+    _currentSortOrder = sortOrder;
+    final currentState = state;
+    if (currentState is FileBrowserLoaded) {
+      _resetThumbnailCachesForDirectory();
       await loadDirectory(currentState.currentPath);
     }
   }
@@ -643,6 +665,8 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
         category: _currentCategory,
         cursor: cursor,
         limit: _pageSize,
+        sortBy: _currentSortBy,
+        sortOrder: _currentSortOrder,
       ),
     );
   }
@@ -669,6 +693,8 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
         nextCursor: page.nextCursor,
         isLoadingMore: false,
         message: null,
+        sortBy: _currentSortBy,
+        sortOrder: _currentSortOrder,
       ),
     );
     _loadNextBatch();
@@ -708,6 +734,8 @@ class FileBrowserCubit extends Cubit<FileBrowserState> {
         nextCursor: page.nextCursor,
         isLoadingMore: false,
         message: null,
+        sortBy: _currentSortBy,
+        sortOrder: _currentSortOrder,
       ),
     );
 

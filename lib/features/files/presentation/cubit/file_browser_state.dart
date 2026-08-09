@@ -30,6 +30,8 @@ class FileBrowserLoaded extends FileBrowserState {
     this.isLoadingMore = false,
     this.message,
     this.thumbnailVersion = 0,
+    this.sortBy,
+    this.sortOrder,
   });
 
   final List<FileEntryEntity> allFiles;
@@ -46,6 +48,10 @@ class FileBrowserLoaded extends FileBrowserState {
   final bool isLoadingMore;
   final String? message;
   final int thumbnailVersion;
+  /// 当前排序字段：'modified' | 'size'，null 表示默认（modified）
+  final String? sortBy;
+  /// 当前排序方向：'asc' | 'desc'，null 表示默认（desc）
+  final String? sortOrder;
 
   FileBrowserLoaded copyWith({
     List<FileEntryEntity>? allFiles,
@@ -62,6 +68,8 @@ class FileBrowserLoaded extends FileBrowserState {
     bool? isLoadingMore,
     String? message,
     int? thumbnailVersion,
+    String? sortBy,
+    String? sortOrder,
   }) {
     return FileBrowserLoaded(
       allFiles: allFiles ?? this.allFiles,
@@ -78,6 +86,8 @@ class FileBrowserLoaded extends FileBrowserState {
       isLoadingMore: isLoadingMore ?? this.isLoadingMore,
       message: message,
       thumbnailVersion: thumbnailVersion ?? this.thumbnailVersion,
+      sortBy: sortBy ?? this.sortBy,
+      sortOrder: sortOrder ?? this.sortOrder,
     );
   }
 }

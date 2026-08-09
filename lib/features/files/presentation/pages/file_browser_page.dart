@@ -883,12 +883,24 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                               ),
                               const SizedBox(height: 14),
                               if (state is FileBrowserLoaded) ...[
-                                PathBreadcrumb(
-                                  path: state.currentPath.path,
-                                  currentRootId: state.currentRootId,
-                                  onTopDirChanged: (rootId) =>
-                                      cubit.switchRoot(rootId),
-                                  showRootToggle: _isMobileServer(),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: PathBreadcrumb(
+                                        path: state.currentPath.path,
+                                        currentRootId: state.currentRootId,
+                                        onTopDirChanged: (rootId) =>
+                                            cubit.switchRoot(rootId),
+                                        showRootToggle: _isMobileServer(),
+                                      ),
+                                    ),
+                                    _SortButton(
+                                      sortBy: cubit.currentSortBy,
+                                      sortOrder: cubit.currentSortOrder,
+                                      onChanged: (sortBy, sortOrder) =>
+                                          cubit.changeSort(sortBy, sortOrder),
+                                    ),
+                                  ],
                                 ),
                                 const SizedBox(height: 12),
                               ],
@@ -1261,4 +1273,75 @@ class _ActiveUploadOverlay {
   final double progress;
 
   const _ActiveUploadOverlay({required this.fileName, required this.progress});
+}
+
+/// 文件排序选项标识。
+enum _FileSortOption {
+  /// 日期从新到旧
+  modifiedDesc('modified', 'desc', '日期从新到旧'),
+  /// 日期从旧到新
+  modifiedAsc('modified', 'asc', '日期从旧到新'),
+  /// 大小从大到小
+  sizeDesc('size', 'desc', '大小从大到小'),
+  /// 大小从小到大
+  sizeAsc('size', 'asc', '大小从小到大');
+
+  const _FileSortOption(this.sortBy, this.sortOrder, this.label);
+
+  final String sortBy;
+  final String sortOrder;
+  final String label;
+
+  static _FileSortOption resolve(String? sortBy, String? sortOrder) {
+    for (final option in values) {
+      if (option.sortBy == sortBy && option.sortOrder == sortOrder) {
+        return option;
+      }
+    }
+    return _FileSortOption.modifiedDesc;
+  }
+}
+
+/// 排序选择按钮，使用 PopupMenuButton 提供四种排序方式。
+class _SortButton extends StatelessWidget {
+  const _SortButton({
+    required this.sortBy,
+    required this.sortOrder,
+    required this.onChanged,
+  });
+
+  final String sortBy;
+  final String sortOrder;
+  final void Function(String sortBy, String sortOrder) onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = _FileSortOption.resolve(sortBy, sortOrder);
+    return PopupMenuButton<_FileSortOption>(
+      tooltip: '排序方式',
+      icon: const Icon(Icons.sort, size: 22, color: Color(0xFF6D6C6A)),
+      onSelected: (option) => onChanged(option.sortBy, option.sortOrder),
+      itemBuilder: (context) => [
+        for (final option in _FileSortOption.values)
+          PopupMenuItem<_FileSortOption>(
+            value: option,
+            child: Row(
+              children: [
+                Icon(
+                  option == current
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_unchecked,
+                  size: 18,
+                  color: option == current
+                      ? Theme.of(context).colorScheme.primary
+                      : const Color(0xFFB0B0B0),
+                ),
+                const SizedBox(width: 8),
+                Text(option.label),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
 }
