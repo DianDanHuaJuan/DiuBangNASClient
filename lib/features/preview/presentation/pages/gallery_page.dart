@@ -446,6 +446,7 @@ class _GalleryMediaPageState extends State<_GalleryMediaPage>
               ),
               source: videoSource,
               isActive: isActivePage,
+              autoPlay: true,
               fullscreenMode: fullscreenMode,
               onFullscreenChanged: widget.onFullscreenChanged,
               onDownloadRequested: () {
@@ -454,7 +455,7 @@ class _GalleryMediaPageState extends State<_GalleryMediaPage>
             ),
           ),
           Positioned(
-            bottom: 68,
+            bottom: 4,
             right: 16,
             child: _VideoDownloadButton(
               state: originalState,

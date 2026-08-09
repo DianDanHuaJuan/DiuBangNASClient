@@ -59,7 +59,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
   static const Duration _initDebounce = Duration(milliseconds: 150);
   static const int _maxDebugLogs = 200;
   /// 可选播放倍速档位
-  static const List<double> _speedOptions = [0.5, 1.0, 1.25, 1.5, 2.0];
+  static const List<double> _speedOptions = [0.5, 1.0, 1.5, 2.0, 3.0];
 
   final List<String> _debugLogs = <String>[];
 
@@ -451,6 +451,8 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
       // 长按 2 倍速
       speedUpOnLongPress: true,
       speedUpFactor: 2.0,
+      // 控件唤起后持续可见的时间（默认 3 秒偏短，增至 5 秒）
+      controlsHoverDuration: const Duration(seconds: 5),
       // 底部按钮栏：时间指示 + 倍速按钮 + 全屏按钮
       bottomButtonBar: [
         const MaterialPositionIndicator(),
@@ -467,6 +469,13 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
             ),
           ),
       ],
+      // 进度条移到按钮栏上方（按钮栏顶 4+40=44，加 4 间隙 = 48），保持好拖
+      // 注意：seekBarMargin 不影响手势盲区，盲区只由 bottomButtonBarMargin + buttonBarHeight 决定
+      seekBarMargin: const EdgeInsets.only(left: 16, right: 16, bottom: 48),
+      // 按钮栏贴近底部，减小 vertical 以缩小手势盲区（media_kit 硬编码底部内缩 16+vertical+buttonBarHeight）
+      bottomButtonBarMargin: const EdgeInsets.only(left: 16, right: 8, bottom: 4),
+      // 减小按钮栏高度以缩小手势盲区（IconButton 默认 40，刚好容纳）
+      buttonBarHeight: 40,
       // 顶部按钮栏：调试日志按钮（仅 debug 模式）
       topButtonBar: kDebugMode
           ? [
