@@ -127,6 +127,17 @@ class _HomeShellPageState extends State<HomeShellPage>
     }
   }
 
+  @override
+  void didChangeMetrics() {
+    // 系统栏高度变化时（immersiveSticky 切换、横竖屏、手势栏显示/隐藏）触发重建，
+    // 确保底部导航栏重新读取最新的 MediaQuery.padding.bottom，避免位置不同步。
+    // MediaQuery 变化本会自动重建依赖它的 widget，此处作为保险，覆盖极端时序。
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+  }
+
   Future<void> _restoreStartupSession() async {
     final result = await serviceLocator.restoreSessionUseCase.call(NoParams());
     if (!mounted) {
@@ -705,8 +716,11 @@ class _BottomNavigationBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 弹性底部安全区：跟随系统导航栏/手势栏高度自适应（红米K60 等大手势栏设备、
+    // immersiveSticky 切换、横竖屏变化都能自动调整），内容始终在安全区上方显示完全。
+    final double bottomInset = MediaQuery.paddingOf(context).bottom;
     return Container(
-      height: 72,
+      height: 72 + bottomInset,
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
@@ -717,7 +731,7 @@ class _BottomNavigationBar extends StatelessWidget {
           ),
         ],
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding: EdgeInsets.fromLTRB(16, 10, 16, 10 + bottomInset),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
