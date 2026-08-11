@@ -58,6 +58,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
   static const Duration _deactivateDisposeDelay = Duration(milliseconds: 500);
   static const Duration _initDebounce = Duration(milliseconds: 150);
   static const int _maxDebugLogs = 200;
+
   /// 可选播放倍速档位
   static const List<double> _speedOptions = [0.5, 1.0, 1.5, 2.0, 3.0];
 
@@ -75,6 +76,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
   bool _hasError = false;
   String? _errorMessage;
   int _loadVersion = 0;
+
   /// 当前播放倍速
   double _playbackSpeed = 1.0;
 
@@ -196,7 +198,9 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     }
 
     try {
-      final player = Player();
+      final player = Player(
+        configuration: const PlayerConfiguration(bufferSize: 128 * 1024 * 1024),
+      );
       final controller = VideoController(player);
 
       _player = player;
@@ -207,6 +211,28 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
         player,
         videoUrl,
       );
+
+      // 局域网 NAS 视频缓冲配置（对齐业界标准方案）：
+      // - cache-on-disk=no：禁用磁盘缓存，纯内存缓存（磁盘 I/O 是瓶颈）
+      // - cache-secs 不设：用 mpv 默认（1000 小时），demuxer 始终全力预读直到
+      //   填满 demuxer-max-bytes，避免设小值导致后半段减速（曾误设 15 秒导致
+      //   后半段缓冲条停滞，被进度条追上）
+      // - demuxer-readahead-secs=15：最小预读 15 秒保证
+      // - demuxer-max-back-bytes=0：完全禁用后向缓冲，已播放 packet 立即丢弃，
+      //   128MB 全给前向预读，避免后向清理不及时导致中后期前向预读停滞。
+      //   回退 seek 用 HTTP Range 重新读取（局域网 <100ms，可接受）。
+      // - demuxer-lavf-buffersize=4MB：增大 lavf demuxer 内部缓冲（默认过小
+      //   导致大量小读取，参考 mpv issue #6802）
+      // - stream-buffer-size=1MB：增大流缓冲区（默认 128KiB 太小，限制网络吞吐）
+      // 配合 PlayerConfiguration.bufferSize=128MB（demuxer-max-bytes）。
+      final platform = player.platform;
+      if (platform is NativePlayer) {
+        await platform.setProperty('cache-on-disk', 'no');
+        await platform.setProperty('demuxer-readahead-secs', '15');
+        await platform.setProperty('demuxer-max-back-bytes', '0');
+        await platform.setProperty('demuxer-lavf-buffersize', '4194304');
+        await platform.setProperty('stream-buffer-size', '1048576');
+      }
 
       _subscribeStreams(player);
 
@@ -306,8 +332,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
 
   void _appendDebugLog(String message) {
     if (!kDebugMode) return;
-    final logEntry =
-        '[VideoDiag] ${DateTime.now().toIso8601String()} $message';
+    final logEntry = '[VideoDiag] ${DateTime.now().toIso8601String()} $message';
     _debugLogs.insert(0, logEntry);
     if (_debugLogs.length > _maxDebugLogs) {
       _debugLogs.removeRange(_maxDebugLogs, _debugLogs.length);
@@ -463,9 +488,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
             onPressed: _toggleFullscreen,
             color: Colors.white,
             icon: Icon(
-              widget.fullscreenMode
-                  ? Icons.fullscreen_exit
-                  : Icons.fullscreen,
+              widget.fullscreenMode ? Icons.fullscreen_exit : Icons.fullscreen,
             ),
           ),
       ],
@@ -473,7 +496,11 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
       // 注意：seekBarMargin 不影响手势盲区，盲区只由 bottomButtonBarMargin + buttonBarHeight 决定
       seekBarMargin: const EdgeInsets.only(left: 16, right: 16, bottom: 48),
       // 按钮栏贴近底部，减小 vertical 以缩小手势盲区（media_kit 硬编码底部内缩 16+vertical+buttonBarHeight）
-      bottomButtonBarMargin: const EdgeInsets.only(left: 16, right: 8, bottom: 4),
+      bottomButtonBarMargin: const EdgeInsets.only(
+        left: 16,
+        right: 8,
+        bottom: 4,
+      ),
       // 减小按钮栏高度以缩小手势盲区（IconButton 默认 40，刚好容纳）
       buttonBarHeight: 40,
       // 顶部按钮栏：调试日志按钮（仅 debug 模式）
