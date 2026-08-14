@@ -202,8 +202,11 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     }
 
     try {
+      // bufferSize 对应 mpv demuxer-max-bytes（前向缓存上限）。
+      // 设为 256MiB：参考 mpv issue #11931，网络流需较大前向缓存避免后半段
+      // 缓存补充速度跟不上播放速度。
       final player = Player(
-        configuration: const PlayerConfiguration(bufferSize: 128 * 1024 * 1024),
+        configuration: const PlayerConfiguration(bufferSize: 256 * 1024 * 1024),
       );
       final controller = VideoController(player);
 
@@ -216,26 +219,36 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
         videoUrl,
       );
 
-      // 局域网 NAS 视频缓冲配置（对齐业界标准方案）：
-      // - cache-on-disk=no：禁用磁盘缓存，纯内存缓存（磁盘 I/O 是瓶颈）
-      // - cache-secs 不设：用 mpv 默认（1000 小时），demuxer 始终全力预读直到
-      //   填满 demuxer-max-bytes，避免设小值导致后半段减速（曾误设 15 秒导致
-      //   后半段缓冲条停滞，被进度条追上）
-      // - demuxer-readahead-secs=15：最小预读 15 秒保证
-      // - demuxer-max-back-bytes=0：完全禁用后向缓冲，已播放 packet 立即丢弃，
-      //   128MB 全给前向预读，避免后向清理不及时导致中后期前向预读停滞。
-      //   回退 seek 用 HTTP Range 重新读取（局域网 <100ms，可接受）。
-      // - demuxer-lavf-buffersize=4MB：增大 lavf demuxer 内部缓冲（默认过小
-      //   导致大量小读取，参考 mpv issue #6802）
-      // - stream-buffer-size=1MB：增大流缓冲区（默认 128KiB 太小，限制网络吞吐）
-      // 配合 PlayerConfiguration.bufferSize=128MB（demuxer-max-bytes）。
+      // 局域网 NAS 视频缓冲配置（基于日志分析的根因修复）：
+      // 根因：MP4 mdat 中音视频 chunk 交错存放，demuxer 按时间戳读包时在
+      // audio 区与 video 区之间每次 ±1.1MB 跳转，超出所有缓冲窗口
+      // （此前 stream-buffer-size=1MB 差一点点），每次跳转都重连 TLS。
+      // - stream-buffer-size=8MB【核心修复】：mpv stream 层滑动窗口增大到 8MB，
+      //   覆盖 ±1.1MB 音视频交错跳转，跳转命中缓冲不再触发网络重连。
+      // - stream-lavf-o=short_seek_size=2MB：FFmpeg http 层短 seek 复用连接，
+      //   前向 seek 小于 2MB 时在当前连接上跳过字节而不重连（第二道防线）。
+      //   注意：multiple_requests 只控制响应读完后是否复用连接发新请求，
+      //   不控制 seek 行为，此前设置无效正是此原因（每次 seek 仍重连）。
+      // - cache-on-disk=no：实测 cache-on-disk=yes 在低端 Android 上更卡
+      //   （闪存写入慢阻塞 demuxer 线程），禁用。
+      // - demuxer-readahead-secs=15：最小预读 15 秒保证。
+      // - demuxer-max-back-bytes=32MiB：后向缓冲设为总缓存 1/8（256MiB/8）。
+      // - demuxer-lavf-buffersize=4MB：增大 lavf demuxer 内部缓冲
+      //   （参考 mpv issue #6802）。
+      // 配合 PlayerConfiguration.bufferSize=256MiB（demuxer-max-bytes，前向缓存）。
       final platform = player.platform;
       if (platform is NativePlayer) {
-        await platform.setProperty('cache-on-disk', 'no');
-        await platform.setProperty('demuxer-readahead-secs', '15');
-        await platform.setProperty('demuxer-max-back-bytes', '0');
-        await platform.setProperty('demuxer-lavf-buffersize', '4194304');
-        await platform.setProperty('stream-buffer-size', '1048576');
+        final mpvConfigs = <String, String>{
+          'cache-on-disk': 'no',
+          'stream-lavf-o': 'short_seek_size=2097152',
+          'demuxer-readahead-secs': '15',
+          'demuxer-max-back-bytes': '33554432',
+          'demuxer-lavf-buffersize': '4194304',
+          'stream-buffer-size': '8388608',
+        };
+        for (final entry in mpvConfigs.entries) {
+          await platform.setProperty(entry.key, entry.value);
+        }
       }
 
       _subscribeStreams(player);
