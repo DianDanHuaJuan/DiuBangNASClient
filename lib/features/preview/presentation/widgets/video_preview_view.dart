@@ -79,6 +79,9 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
 
   /// 当前播放倍速
   double _playbackSpeed = 1.0;
+  /// 倍速 Notifier，驱动 bottomButtonBar 中倍速按钮更新
+  ///（绕过 MaterialVideoControlsTheme.updateShouldNotify 不通知的问题，见 media_kit issue #653）
+  final ValueNotifier<double> _speedNotifier = ValueNotifier(1.0);
 
   @override
   void initState() {
@@ -122,6 +125,7 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
   void dispose() {
     _loadVersion++;
     _deferredDisposeTimer?.cancel();
+    _speedNotifier.dispose();
     unawaited(_disposeController());
     super.dispose();
   }
@@ -420,9 +424,8 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     if (!mounted) {
       return;
     }
-    setState(() {
-      _playbackSpeed = speed;
-    });
+    _playbackSpeed = speed;
+    _speedNotifier.value = speed;
   }
 
   @override
@@ -516,35 +519,40 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
     );
   }
 
-  /// 倍速切换按钮
+  /// 倍速切换按钮（用 ValueListenableBuilder 绕过 updateShouldNotify 不通知的问题）
   Widget _buildSpeedButton() {
-    return PopupMenuButton<double>(
-      tooltip: '播放倍速',
-      onSelected: (speed) => unawaited(_setPlaybackSpeed(speed)),
-      itemBuilder: (context) => _speedOptions
-          .map(
-            (speed) => PopupMenuItem<double>(
-              value: speed,
-              child: Row(
-                children: [
-                  if (speed == _playbackSpeed)
-                    const Icon(Icons.check, size: 18)
-                  else
-                    const SizedBox(width: 18),
-                  const SizedBox(width: 8),
-                  Text('${_formatSpeed(speed)}x'),
-                ],
-              ),
+    return ValueListenableBuilder<double>(
+      valueListenable: _speedNotifier,
+      builder: (context, speed, child) {
+        return PopupMenuButton<double>(
+          tooltip: '播放倍速',
+          onSelected: (s) => unawaited(_setPlaybackSpeed(s)),
+          itemBuilder: (context) => _speedOptions
+              .map(
+                (s) => PopupMenuItem<double>(
+                  value: s,
+                  child: Row(
+                    children: [
+                      if (s == speed)
+                        const Icon(Icons.check, size: 18)
+                      else
+                        const SizedBox(width: 18),
+                      const SizedBox(width: 8),
+                      Text('${_formatSpeed(s)}x'),
+                    ],
+                  ),
+                ),
+              )
+              .toList(),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Text(
+              '${_formatSpeed(speed)}x',
+              style: const TextStyle(color: Colors.white, fontSize: 14),
             ),
-          )
-          .toList(),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Text(
-          '${_formatSpeed(_playbackSpeed)}x',
-          style: const TextStyle(color: Colors.white, fontSize: 14),
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
