@@ -459,14 +459,14 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          _buildPosterLayer(),
+          // 缩略图仅作加载占位：视频就绪后移除，避免在视频黑边区域透出。
+          if (!_isReady) _buildPosterLayer(),
           if (controller != null && player != null && _isReady)
-            Center(
-              child: AspectRatio(
-                aspectRatio: _aspectRatio,
-                child: _buildVideoWithControls(controller),
-              ),
-            )
+            // Video 直接铺满容器，内部按视频真实宽高比 contain 居中：
+            // 竖屏视频宽撑满上下黑边，横屏视频高撑满左右黑边（业界标准 letterbox）。
+            // 不再用外层 AspectRatio：open() 返回时 mpv 尚未报告尺寸导致回退 16/9，
+            // 且尺寸后续就绪时无重建机制，竖屏视频会僵死在中间 16/9 横框内。
+            _buildVideoWithControls(controller)
           else
             _buildLoadingLayer(),
         ],
@@ -659,17 +659,6 @@ class _VideoPreviewViewState extends State<VideoPreviewView> {
         ),
       ),
     );
-  }
-
-  double get _aspectRatio {
-    final player = _player;
-    if (player == null) return 16 / 9;
-    final width = player.state.width;
-    final height = player.state.height;
-    if (width != null && height != null && width > 0 && height > 0) {
-      return width / height;
-    }
-    return 16 / 9;
   }
 
   Duration _effectiveDuration() {
