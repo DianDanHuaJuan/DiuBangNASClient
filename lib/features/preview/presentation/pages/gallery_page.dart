@@ -454,8 +454,10 @@ class _GalleryMediaPageState extends State<_GalleryMediaPage>
               },
             ),
           ),
+          // 上移到按钮栏上方，避免与 media_kit 全屏按钮重合。
+          // 按钮栏顶部 = bottomMargin(4) + buttonBarHeight(40) = 44，再加 4 间隙 = 48。
           Positioned(
-            bottom: 4,
+            bottom: 48,
             right: 16,
             child: _VideoDownloadButton(
               state: originalState,
